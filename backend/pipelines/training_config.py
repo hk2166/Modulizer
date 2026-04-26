@@ -170,14 +170,21 @@ class TrainingDecision:
 # ══════════════════════════════════════════════════════════════════
 
 
-def decide_preset(force_preset: Optional[Preset] = None) -> TrainingDecision:
+def decide_preset(
+    force_preset: Optional[Preset] = None,
+    train_clip_count: Optional[int] = None,
+) -> TrainingDecision:
     """
     Inspect the local machine and pick a training preset.
 
     Args:
-        force_preset: For testing — skip hardware detection and use this
-                      preset directly. Production callers should leave this
-                      as None.
+        force_preset:     For testing — skip hardware detection and use this
+                          preset directly. Production callers should leave this
+                          as None.
+        train_clip_count: How many clips the user's dataset has. Drives the
+                          ETA: more clips → more micro-batches per epoch →
+                          longer wall clock. If None (no dataset built yet),
+                          we plan against a typical 30-clip Voice Profile.
 
     Returns:
         TrainingDecision (always non-None). Check `.can_train` to know if
@@ -195,9 +202,13 @@ def decide_preset(force_preset: Optional[Preset] = None) -> TrainingDecision:
         "free_disk_gb": disk.get("free_disk_gb", 0.0),
     }
 
+    # If no dataset built yet, plan for a typical Voice Profile (30 clips).
+    # The endpoint will pass the real count once the user has data.
+    clips = train_clip_count if train_clip_count is not None else 30
+
     # ── Forced override (for tests / debugging only) ──────────────
     if force_preset is not None:
-        plan = _build_plan(force_preset)
+        plan = _build_plan(force_preset, train_clip_count=clips)
         return TrainingDecision(
             can_train=True,
             plan=plan,
@@ -262,7 +273,7 @@ def decide_preset(force_preset: Optional[Preset] = None) -> TrainingDecision:
     else:
         preset = Preset.LOW_VRAM
 
-    plan = _build_plan(preset, vram_gb=vram)
+    plan = _build_plan(preset, vram_gb=vram, train_clip_count=clips)
     return TrainingDecision(
         can_train=True,
         plan=plan,
@@ -276,18 +287,18 @@ def decide_preset(force_preset: Optional[Preset] = None) -> TrainingDecision:
 # ══════════════════════════════════════════════════════════════════
 
 
-def _build_plan(preset: Preset, vram_gb: float = 0.0) -> TrainingPlan:
+def _build_plan(preset: Preset, vram_gb: float = 0.0, train_clip_count: int = 30) -> TrainingPlan:
     """Translate a preset choice into concrete numbers."""
     if preset == Preset.STANDARD:
-        return _standard_plan(vram_gb)
+        return _standard_plan(vram_gb, train_clip_count)
     if preset == Preset.LOW_VRAM:
-        return _low_vram_plan(vram_gb)
+        return _low_vram_plan(vram_gb, train_clip_count)
 
     # Refusal presets shouldn't reach here, but keep the dispatch total.
     raise ValueError(f"Cannot build a plan for refusal preset: {preset}")
 
 
-def _standard_plan(vram_gb: float) -> TrainingPlan:
+def _standard_plan(vram_gb: float, train_clip_count: int = 30) -> TrainingPlan:
     """
     Standard preset: ≥8 GB VRAM available.
 
@@ -323,12 +334,19 @@ def _standard_plan(vram_gb: float) -> TrainingPlan:
         print_step=10,
         run_eval=True,
         eval_step=200,
-        estimated_minutes=_estimate_minutes(vram_gb, batch_size=8, low_vram=False),
+        estimated_minutes=_estimate_minutes(
+            vram_gb=vram_gb,
+            batch_size=8,
+            grad_accum_steps=1,
+            target_steps=250,
+            train_clip_count=train_clip_count,
+            low_vram=False,
+        ),
         notes=notes,
     )
 
 
-def _low_vram_plan(vram_gb: float) -> TrainingPlan:
+def _low_vram_plan(vram_gb: float, train_clip_count: int = 30) -> TrainingPlan:
     """
     Low-VRAM preset: 3–8 GB VRAM. Heavy memory-saving tricks.
 
@@ -371,7 +389,14 @@ def _low_vram_plan(vram_gb: float) -> TrainingPlan:
         print_step=10,
         run_eval=True,
         eval_step=200,
-        estimated_minutes=_estimate_minutes(vram_gb, batch_size=2, low_vram=True),
+        estimated_minutes=_estimate_minutes(
+            vram_gb=vram_gb,
+            batch_size=2,
+            grad_accum_steps=4,
+            target_steps=250,
+            train_clip_count=train_clip_count,
+            low_vram=True,
+        ),
         notes=notes,
     )
 
@@ -381,34 +406,61 @@ def _low_vram_plan(vram_gb: float) -> TrainingPlan:
 # ══════════════════════════════════════════════════════════════════
 
 
-def _estimate_minutes(vram_gb: float, batch_size: int, low_vram: bool) -> int:
-    """
-    Rough wall-clock estimate to hit `target_steps` (~250 by default) on a
-    typical ~30-clip Voice Profile dataset. Numbers come from real
-    fine-tuning runs reported in the Coqui community (we'll tighten these
-    once we have our own measurements). Treat as "expect this much give
-    or take 30%".
+# Per-step time, by hardware tier (seconds per micro-batch step). A
+# micro-batch step is one forward+backward pass; with grad accumulation,
+# multiple micro-batches make up a single weight update.
+SECONDS_PER_STEP = {
+    "standard_high":   0.45,   # ≥16 GB VRAM, batch 8, bf16
+    "standard_mid":    0.65,   # 12–16 GB,    batch 8, bf16
+    "standard_low":    1.10,   # 8–12 GB,     batch 8, bf16
+    "low_vram_high":   1.80,   # 6–8 GB,      batch 2 + accum 4, fp16 + ckpt
+    "low_vram_mid":    2.80,   # 4–6 GB,      batch 2 + accum 4, fp16 + ckpt
+    "low_vram_low":    4.00,   # 3–4 GB,      batch 2 + accum 4, fp16 + ckpt
+}
 
-    The estimate scales roughly linearly with target_steps. If you tune
-    it later (e.g. "fast mode" at 150 steps), update these accordingly.
 
-    Standard 12 GB GPU, batch 8 →  ~25 min for 250 steps
-    Low-VRAM 6 GB,  batch 2+accum →  ~80 min for 250 steps
-    Low-VRAM 4 GB,  batch 2+accum → ~140 min for 250 steps
-    """
+def _per_step_seconds(vram_gb: float, low_vram: bool) -> float:
     if low_vram:
-        # Smaller VRAM → more memory pressure → slower per-step.
         if vram_gb >= 6.0:
-            return 80
+            return SECONDS_PER_STEP["low_vram_high"]
         if vram_gb >= 4.0:
-            return 140
-        return 200  # 3–4 GB territory
-    # Standard
+            return SECONDS_PER_STEP["low_vram_mid"]
+        return SECONDS_PER_STEP["low_vram_low"]
     if vram_gb >= 16.0:
-        return 18
+        return SECONDS_PER_STEP["standard_high"]
     if vram_gb >= 12.0:
-        return 25
-    return 40  # 8–12 GB range
+        return SECONDS_PER_STEP["standard_mid"]
+    return SECONDS_PER_STEP["standard_low"]
+
+
+def _estimate_minutes(
+    vram_gb: float,
+    batch_size: int,
+    grad_accum_steps: int,
+    target_steps: int,
+    train_clip_count: int,
+    low_vram: bool,
+) -> int:
+    """
+    Wall-clock estimate in minutes to hit `target_steps` weight updates.
+
+    Counts micro-batches, not weight updates: the GPU spends time on every
+    forward/backward pass, even the ones that just accumulate gradients.
+    A run with grad_accum=4 does 4× the GPU work per logged "step".
+    """
+    import math
+
+    clips = max(1, train_clip_count)
+    batch = max(1, batch_size)
+    accum = max(1, grad_accum_steps)
+
+    micro_batches_per_epoch = max(1, clips // batch)
+    updates_per_epoch = max(1, micro_batches_per_epoch // accum)
+    epochs = max(1, math.ceil(target_steps / updates_per_epoch))
+
+    total_micro_batches = epochs * micro_batches_per_epoch
+    seconds = total_micro_batches * _per_step_seconds(vram_gb, low_vram)
+    return max(1, int(round(seconds / 60)))
 
 
 def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:
