@@ -427,8 +427,29 @@ def get_training_plan(project_id: str):
     # isn't being used.
     from backend.pipelines.training_config import decide_preset
     from dataclasses import asdict
+    import json
 
-    decision = decide_preset()
+    # Dataset-aware ETA: more clips → more micro-batches per epoch → longer
+    # wall clock. We look for the manifest first (most accurate); if there's
+    # no built dataset yet, fall back to counting processed clips so the
+    # preview the user sees during recording is still close to reality.
+    project_dir = Path(DATA_DIR) / "projects" / project_id
+    manifest_path = project_dir / "dataset" / "manifest.json"
+
+    train_clip_count: int | None = None
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            train_clip_count = int(manifest.get("train_count", 0)) or None
+        except (ValueError, OSError):
+            train_clip_count = None
+
+    if train_clip_count is None:
+        processed = project_dir / "processed"
+        if processed.exists():
+            train_clip_count = len(list(processed.glob("*.wav"))) or None
+
+    decision = decide_preset(train_clip_count=train_clip_count)
     return {
         "can_train": decision.can_train,
         "summary": decision.friendly_summary,
