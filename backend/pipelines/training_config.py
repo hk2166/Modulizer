@@ -475,13 +475,17 @@ def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:
     minutes = plan.estimated_minutes
     hours = minutes / 60.0
 
-    # Time phrasing
-    if hours < 1.0:
+    # Round honestly so a 1.4-hour wait doesn't read as "about 1 hour".
+    if minutes < 60:
         time_txt = f"about {minutes} minutes"
-    elif hours < 1.5:
+    elif minutes < 75:
         time_txt = "about 1 hour"
+    elif minutes < 105:
+        time_txt = "about 1.5 hours"
     else:
-        time_txt = f"about {hours:.1f} hours"
+        rounded = round(hours * 2) / 2
+        rounded_txt = f"{rounded:.1f}".rstrip("0").rstrip(".")
+        time_txt = f"about {rounded_txt} hours"
 
     # Effort phrasing
     if plan.preset == Preset.STANDARD:
