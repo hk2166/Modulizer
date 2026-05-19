@@ -199,6 +199,7 @@ def decide_preset(
         "cuda": gpu.get("cuda", False),
         "gpu_name": gpu.get("gpu_name"),
         "vram_gb": gpu.get("vram_gb", 0.0),
+        "power_watts": gpu.get("power_watts"),
         "free_disk_gb": disk.get("free_disk_gb", 0.0),
     }
 
@@ -463,6 +464,35 @@ def _estimate_minutes(
     return max(1, int(round(seconds / 60)))
 
 
+def _energy_phrase(power_watts: int, minutes: int) -> str:
+    """
+    Friendly "Total energy: ~N Wh — about as much as ..." line. Sustained
+    draw sits around 95% of the power cap; analogies are deliberately rough.
+    """
+    sustained = power_watts * 0.95
+    wh = (sustained * minutes) / 60.0
+
+    if wh < 1000:
+        amount = f"~{int(round(wh))} Wh"
+    else:
+        amount = f"~{wh / 1000:.1f} kWh"
+
+    if wh < 50:
+        analogy = "a few phone charges"
+    elif wh < 250:
+        analogy = "leaving a desk lamp on for a few hours"
+    elif wh < 800:
+        analogy = "running a microwave for ~10 minutes"
+    elif wh < 2000:
+        analogy = "running an electric kettle for an hour"
+    elif wh < 8000:
+        analogy = "a full clothes dryer cycle"
+    else:
+        analogy = "running an air conditioner all day"
+
+    return f"Total energy use: {amount} — about as much as {analogy}."
+
+
 def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:
     """
     Produce a friendly human summary the UI can show on the disclosure modal.
@@ -487,7 +517,6 @@ def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:
         rounded_txt = f"{rounded:.1f}".rstrip("0").rstrip(".")
         time_txt = f"about {rounded_txt} hours"
 
-    # Effort phrasing
     if plan.preset == Preset.STANDARD:
         effort_txt = (
             "Your machine has plenty of memory, so training will run "
@@ -499,10 +528,20 @@ def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:
             "carefully — same quality, just a bit slower."
         )
 
+    # Power line — only if we know the wattage. AMD / M-series / unknown
+    # cards keep the generic copy below.
+    power_watts = detected.get("power_watts")
+    if power_watts:
+        power_txt = (
+            f"Your GPU will run at ~95% load (about {power_watts} W). "
+            f"{_energy_phrase(power_watts, minutes)}"
+        )
+    else:
+        power_txt = "Your GPU will run at full load while training."
+
     return (
         f"On your {gpu_name} ({vram:.1f} GB), training will take {time_txt}.\n\n"
         f"{effort_txt}\n\n"
-        f"Your GPU will run at full load while training. You can keep "
-        f"using your computer for light tasks, but heavy apps will compete "
-        f"for resources."
+        f"{power_txt} You can keep using your computer for light tasks, "
+        f"but heavy apps will compete for resources."
     )
