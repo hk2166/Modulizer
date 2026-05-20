@@ -31,13 +31,13 @@ Goal: user can record 30 clips through a guided UI, app validates and cleans aud
 
 ### Backend — `backend/audio/`
 
-- [ ] `recorder.py` — accept uploaded `.wav` chunks, save to `data/projects/{project}/raw/`
-- [ ] `validator.py` — per-clip checks:
-  - [ ] Duration in range (e.g. 3–15s)
-  - [ ] SNR / silence ratio threshold
-  - [ ] Clipping detection (peak > -1 dBFS)
-  - [ ] Sample rate normalization target (24 kHz for XTTS)
-  - [ ] Return user-friendly error messages (no jargon)
+- [x] `recorder.py` — accept uploaded `.wav` chunks, save to `data/projects/{project}/raw/`
+- [x] `validator.py` — per-clip checks:
+  - [x] Duration in range (e.g. 3–15s)
+  - [x] SNR / silence ratio threshold
+  - [x] Clipping detection (peak > -1 dBFS)
+  - [x] Sample rate normalization target (24 kHz for XTTS)
+  - [x] Return user-friendly error messages (no jargon)
 - [ ] `preprocessor.py` — FFmpeg pipeline:
   - [ ] Resample to 24 kHz mono
   - [ ] Trim leading/trailing silence
