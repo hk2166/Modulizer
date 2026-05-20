@@ -52,7 +52,7 @@ Goal: user can record 30 clips through a guided UI, app validates and cleans aud
 - [x] `POST /projects` — create a new voice project
 - [x] `GET /projects/{id}` — project state, clip count, validation status
 - [x] `POST /projects/{id}/clips` — upload a clip (multipart)
-- [ ] `DELETE /projects/{id}/clips/{clip_id}` — re-record support
+- [x]`DELETE /projects/{id}/clips/{clip_id}` — re-record support
 - [ ] `POST /projects/{id}/preprocess` — kick off async preprocess job
 - [ ] Wire all long-running work through `JobManager` (background tasks)
 
