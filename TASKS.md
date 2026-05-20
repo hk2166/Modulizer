@@ -38,14 +38,14 @@ Goal: user can record 30 clips through a guided UI, app validates and cleans aud
   - [x] Clipping detection (peak > -1 dBFS)
   - [x] Sample rate normalization target (24 kHz for XTTS)
   - [x] Return user-friendly error messages (no jargon)
-- [ ] `preprocessor.py` — FFmpeg pipeline:
-  - [ ] Resample to 24 kHz mono
-  - [ ] Trim leading/trailing silence
-  - [ ] Loudness normalize (EBU R128 or peak-based)
-  - [ ] Optional: light denoise pass
-  - [ ] Output to `data/projects/{project}/processed/`
-- [ ] `transcriber.py` — faster-whisper integration for clip QA (verify spoken text matches script)
-- [ ] Recording script asset (`data/scripts/default_en.json`) — ~30 phonetically diverse prompts
+- [x] `preprocessor.py` — FFmpeg pipeline:
+  - [x] Resample to 24 kHz mono
+  - [x] Trim leading/trailing silence
+  - [x] Loudness normalize (EBU R128 or peak-based)
+  - [x] Optional: light denoise pass
+  - [x] Output to `data/projects/{project}/processed/`
+- [x] `transcriber.py` — faster-whisper integration for clip QA (verify spoken text matches script)
+- [x] Recording script asset (`data/scripts/default_en.json`) — ~30 phonetically diverse prompts
 
 ### API
 

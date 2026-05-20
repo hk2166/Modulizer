@@ -1,0 +1,348 @@
+{
+  "version": "1.1",
+  "description": "Phonetically diverse prompts for voice profile setup. Covers all major phonemes, consonant clusters, and prosodic patterns for English and Hindi.",
+  "languages": {
+    "en": {
+      "language": "English",
+      "prompts": [
+        {
+          "id": 1,
+          "text": "The quick brown fox jumps over the lazy dog.",
+          "focus": "pangram — all 26 letters, natural rhythm"
+        },
+        {
+          "id": 2,
+          "text": "She sells seashells by the seashore, and the shells she sells are surely seashells.",
+          "focus": "sibilants — /s/ and /ʃ/ contrast"
+        },
+        {
+          "id": 3,
+          "text": "How much wood would a woodchuck chuck if a woodchuck could chuck wood?",
+          "focus": "labials and velars — /w/, /tʃ/, /k/"
+        },
+        {
+          "id": 4,
+          "text": "Peter Piper picked a peck of pickled peppers.",
+          "focus": "bilabial stops — /p/ in various positions"
+        },
+        {
+          "id": 5,
+          "text": "I saw a kitten eating chicken in the kitchen.",
+          "focus": "velar stops and affricates — /k/, /tʃ/"
+        },
+        {
+          "id": 6,
+          "text": "The weather outside is frightful, but the fire is so delightful.",
+          "focus": "fricatives — /w/, /f/, /ð/, /s/"
+        },
+        {
+          "id": 7,
+          "text": "Around the rugged rocks the ragged rascal ran.",
+          "focus": "rhotic consonant — /r/ in all positions"
+        },
+        {
+          "id": 8,
+          "text": "Whether the weather is warm, whether the weather is hot, we have to put up with the weather, whether we like it or not.",
+          "focus": "dental fricatives — /ð/ and /θ/ contrast"
+        },
+        {
+          "id": 9,
+          "text": "Unique New York, unique New York, you know you need unique New York.",
+          "focus": "high front vowels and nasals — /juː/, /n/, /k/"
+        },
+        {
+          "id": 10,
+          "text": "The thirty-three thieves thought that they thrilled the throne throughout Thursday.",
+          "focus": "voiceless dental fricative — /θ/ clusters"
+        },
+        {
+          "id": 11,
+          "text": "I scream, you scream, we all scream for ice cream.",
+          "focus": "vowel /iː/, consonant clusters /skr/"
+        },
+        {
+          "id": 12,
+          "text": "A big black bear sat on a big black rug.",
+          "focus": "voiced stops — /b/, /g/, short vowels"
+        },
+        {
+          "id": 13,
+          "text": "Can you can a can as a canner can can a can?",
+          "focus": "velar /k/ and schwa — rhythm and stress"
+        },
+        {
+          "id": 14,
+          "text": "Fresh French fried fish and chips.",
+          "focus": "fricatives and affricates — /f/, /tʃ/, /ʃ/"
+        },
+        {
+          "id": 15,
+          "text": "The sun shines on the shop signs.",
+          "focus": "/s/ vs /ʃ/ distinction, diphthong /aɪ/"
+        },
+        {
+          "id": 16,
+          "text": "Six slippery snails slid slowly seaward.",
+          "focus": "consonant clusters — /sl/, /sn/, /sw/"
+        },
+        {
+          "id": 17,
+          "text": "I thought I thought of thinking of thanking you.",
+          "focus": "dental fricatives — /θ/ and /ð/ in sequence"
+        },
+        {
+          "id": 18,
+          "text": "The blue bluebird blinks.",
+          "focus": "lateral /l/, bilabial /b/, short vowels"
+        },
+        {
+          "id": 19,
+          "text": "Which witch is which? The rich witch switched.",
+          "focus": "/w/ vs /hw/, affricate /tʃ/, /ʃ/"
+        },
+        {
+          "id": 20,
+          "text": "Red lorry, yellow lorry, red lorry, yellow lorry.",
+          "focus": "rhotic /r/ vs lateral /l/, vowel contrast"
+        },
+        {
+          "id": 21,
+          "text": "The great Greek grape growers grow great Greek grapes.",
+          "focus": "consonant clusters — /gr/, velar /k/"
+        },
+        {
+          "id": 22,
+          "text": "Eleven benevolent elephants.",
+          "focus": "labio-dental /v/, /f/, schwa, stress patterns"
+        },
+        {
+          "id": 23,
+          "text": "A proper copper coffee pot.",
+          "focus": "bilabial /p/, velar /k/, short vowels"
+        },
+        {
+          "id": 24,
+          "text": "The soldier's shoulder surely hurts.",
+          "focus": "palatal /ʃ/, rhotic vowels, /ɜː/"
+        },
+        {
+          "id": 25,
+          "text": "Mixed biscuits, mixed biscuits.",
+          "focus": "consonant clusters — /kst/, /sk/, /ts/"
+        },
+        {
+          "id": 26,
+          "text": "I wish to wash my Irish wristwatch.",
+          "focus": "/w/, /ʃ/, /r/ clusters, vowel /ɪ/"
+        },
+        {
+          "id": 27,
+          "text": "The myth of fingerprints.",
+          "focus": "nasal /m/, /n/, /ŋ/, fricative /f/, /θ/"
+        },
+        {
+          "id": 28,
+          "text": "Toy boat, toy boat, toy boat.",
+          "focus": "diphthong /ɔɪ/, bilabial /b/, alveolar /t/"
+        },
+        {
+          "id": 29,
+          "text": "How kind of you to let me come. I know you'll make me feel at home.",
+          "focus": "natural sentence prosody, rising and falling intonation"
+        },
+        {
+          "id": 30,
+          "text": "Good morning. I hope you're having a wonderful day. The weather looks beautiful outside.",
+          "focus": "natural conversational tone, full sentence prosody"
+        }
+      ]
+    },
+    "hi": {
+      "language": "Hindi",
+      "script": "Devanagari",
+      "transliteration_scheme": "IAST",
+      "prompts": [
+        {
+          "id": 1,
+          "text": "कच्चा पापड़, पक्का पापड़, कच्चा पापड़, पक्का पापड़।",
+          "transliteration": "kaccā pāpaṛ, pakkā pāpaṛ, kaccā pāpaṛ, pakkā pāpaṛ.",
+          "focus": "retroflex stops — /ʈ/, /ɖ/, aspirated vs. unaspirated /p/"
+        },
+        {
+          "id": 2,
+          "text": "चंद्र, चाँद, चमक, चिड़िया, चोटी, चूहा।",
+          "transliteration": "candra, cānd, camak, ciṛiyā, coṭī, cūhā.",
+          "focus": "palatal affricate /tʃ/, nasal /n/, vowel series /a, ā, i, ī, o, u/"
+        },
+        {
+          "id": 3,
+          "text": "खरगोश खाना खाता है और खेत में खेलता है।",
+          "transliteration": "kharagoś khānā khātā hai aur khet meṃ kheltā hai.",
+          "focus": "aspirated velar /kʰ/, vowel contrasts, natural sentence prosody"
+        },
+        {
+          "id": 4,
+          "text": "दादा-दादी, नाना-नानी, भाई-बहन, माँ-बाप।",
+          "transliteration": "dādā-dādī, nānā-nānī, bhāī-bahan, māṃ-bāp.",
+          "focus": "dental stops /d/, /n/, nasalized vowels /ã/, aspirated /bʰ/"
+        },
+        {
+          "id": 5,
+          "text": "भौंरा भूमि पर भागता, बाघ बाग़ में बैठा।",
+          "transliteration": "bhauṃrā bhūmi par bhāgatā, bāgh bāġ meṃ baiṭhā.",
+          "focus": "aspirated bilabial /bʰ/, diphthong /au/, retroflex /ʈʰ/"
+        },
+        {
+          "id": 6,
+          "text": "थोड़ा थका, थोड़ा थरथराया, थाली में थपथपाया।",
+          "transliteration": "thoṛā thakā, thoṛā tharatharāyā, thālī meṃ thapathapāyā.",
+          "focus": "aspirated dental /tʰ/ vs. retroflex /ʈ/, rhythm and repetition"
+        },
+        {
+          "id": 7,
+          "text": "शेर जंगल में शांति से शाम को शिकार करता है।",
+          "transliteration": "śer jaṃgal meṃ śānti se śām ko śikār kartā hai.",
+          "focus": "palatal fricative /ʃ/, nasal cluster /ŋg/, long vowels"
+        },
+        {
+          "id": 8,
+          "text": "रोज़ रात रमेश रसोई में रोटी और राजमा बनाता है।",
+          "transliteration": "roz rāt Rameś rasoī meṃ roṭī aur rājmā banātā hai.",
+          "focus": "flap /r/, retroflex /ʈ/, diphthong /oɪ/, long vowels"
+        },
+        {
+          "id": 9,
+          "text": "घड़ी घंटे गिनती है, घर में घड़ियाल घूमता है।",
+          "transliteration": "ghaṛī ghaṃṭe ginatī hai, ghar meṃ ghaṛiyāl ghūmtā hai.",
+          "focus": "aspirated velar /gʰ/, retroflex flap /ɽ/, nasals"
+        },
+        {
+          "id": 10,
+          "text": "पहाड़ पर पत्थर, पत्ते पर पानी, पाँव पर पट्टी।",
+          "transliteration": "pahāṛ par patthar, patte par pānī, pāṃv par paṭṭī.",
+          "focus": "unaspirated bilabial /p/, retroflex /ʈʈ/, nasalized vowel /ã/"
+        },
+        {
+          "id": 11,
+          "text": "सूरज सुबह उगता है, चाँद रात को चमकता है।",
+          "transliteration": "sūraj subah ugatā hai, cānd rāt ko camakatā hai.",
+          "focus": "alveolar /s/, uvular /r/, vowel length contrast /u/ vs. /ū/"
+        },
+        {
+          "id": 12,
+          "text": "क्या आप कहीं जा रहे हैं? कब वापस आएँगे?",
+          "transliteration": "kyā āp kahīṃ jā rahe haiṃ? kab vāpas āeṃge?",
+          "focus": "question intonation, rising tone, honorific pronoun /āp/"
+        },
+        {
+          "id": 13,
+          "text": "ज़िन्दगी ज़रूरी ज़िम्मेदारी जानकर जीना ज़रूरी है।",
+          "transliteration": "zindagī zarūrī zimmedārī jānakar jīnā zarūrī hai.",
+          "focus": "borrowed fricative /z/, long vowels, stress patterns"
+        },
+        {
+          "id": 14,
+          "text": "फूल फलते हैं, फसल फैलती है, फिर भी फ़िक्र है।",
+          "transliteration": "phūl phalate haiṃ, phasal phailatī hai, phir bhī fikr hai.",
+          "focus": "aspirated labiodental /pʰ/ vs. borrowed /f/, diphthong /ai/"
+        },
+        {
+          "id": 15,
+          "text": "नदी नाव नाविक, नाम नगर निराला।",
+          "transliteration": "nadī nāv nāvik, nām nagar nirālā.",
+          "focus": "dental nasal /n/, vowel /i/, alliterative rhythm"
+        },
+        {
+          "id": 16,
+          "text": "मैं मुंबई में मेरे मामा के मकान में मिला।",
+          "transliteration": "maiṃ mumbaī meṃ mere māmā ke makān meṃ milā.",
+          "focus": "bilabial nasal /m/, diphthong /ai/, anusvara /ṃ/"
+        },
+        {
+          "id": 17,
+          "text": "बादल बरसे, बिजली चमके, बच्चे भागे।",
+          "transliteration": "bādal barse, bijalī camke, bacce bhāge.",
+          "focus": "voiced stop /b/, geminate /cc/, short /i/ vs. long /ī/"
+        },
+        {
+          "id": 18,
+          "text": "हाथी हँसता है, हिरन हिचकिचाता है, हवा हिलती है।",
+          "transliteration": "hāthī haṃstā hai, hiran hicakicātā hai, havā hiltī hai.",
+          "focus": "glottal /h/, aspirated /tʰ/, nasalized vowel"
+        },
+        {
+          "id": 19,
+          "text": "आसमान आज़ाद, अपना आनंद, आओ आगे आओ।",
+          "transliteration": "āsamān āzād, apanā ānaṃd, āo āge āo.",
+          "focus": "initial vowel /ā/, borrowed /z/, imperative intonation"
+        },
+        {
+          "id": 20,
+          "text": "कोयल कूकती है, काक काँव-काँव करता है, कबूतर गुटरगूँ।",
+          "transliteration": "koyal kūkatī hai, kāk kāṃv-kāṃv kartā hai, kabūtar guṭaraguṃ.",
+          "focus": "velar /k/, onomatopoeia, nasalized vowel, vowel /u/ and /ū/"
+        },
+        {
+          "id": 21,
+          "text": "विद्यालय में विद्यार्थी विद्या सीखते हैं।",
+          "transliteration": "vidyālay meṃ vidyārthī vidyā sīkhate haiṃ.",
+          "focus": "consonant cluster /dy/, aspirated /tʰ/, long /ā/ and /ī/"
+        },
+        {
+          "id": 22,
+          "text": "ठंडा ठंडा पानी पियो, तन-मन ताज़ा हो जाएगा।",
+          "transliteration": "ṭhaṃḍā ṭhaṃḍā pānī piyo, tan-man tāzā ho jāegā.",
+          "focus": "aspirated retroflex /ʈʰ/, retroflex nasal /ɳ/, contrast /ʈ/ vs. /t/"
+        },
+        {
+          "id": 23,
+          "text": "खुशी खुशी खेलो, ख़तरे से खबरदार रहो।",
+          "transliteration": "khuśī khuśī khelo, ḵhatare se khabardār raho.",
+          "focus": "aspirated /kʰ/, borrowed fricative /x/ (ख़), imperative mood"
+        },
+        {
+          "id": 24,
+          "text": "सच्चाई, सफ़ाई, सादगी — जीवन के तीन गुण।",
+          "transliteration": "saccāī, safāī, sādagī — jīvan ke tīn guṇ.",
+          "focus": "geminate /cc/, borrowed /f/, retroflex nasal /ɳ/, listing intonation"
+        },
+        {
+          "id": 25,
+          "text": "गाँव के लोग गाते हैं, बजाते हैं, नाचते हैं।",
+          "transliteration": "gāṃv ke log gāte haiṃ, bajāte haiṃ, nācate haiṃ.",
+          "focus": "nasalized /ã/, voiced velar /g/, listing prosody"
+        },
+        {
+          "id": 26,
+          "text": "प्यार, परिवार, परिश्रम — यही जीवन का सार है।",
+          "transliteration": "pyār, parivār, pariśram — yahī jīvan kā sār hai.",
+          "focus": "cluster /py/, palatal /ʃ/, consonant cluster /śr/, declarative prosody"
+        },
+        {
+          "id": 27,
+          "text": "धीरे-धीरे बोलो, स्पष्ट और साफ़-साफ़ बोलो।",
+          "transliteration": "dhīre-dhīre bolo, spaṣṭ aur sāf-sāf bolo.",
+          "focus": "aspirated dental /dʰ/, cluster /sp/, retroflex /ʂ/, reduplication"
+        },
+        {
+          "id": 28,
+          "text": "त्योहार में तरह-तरह के पकवान बनते हैं।",
+          "transliteration": "tyohār meṃ tarah-tarah ke pakavān bante haiṃ.",
+          "focus": "cluster /ty/, reduplication, dental /t/, nasal /n/"
+        },
+        {
+          "id": 29,
+          "text": "नमस्ते! आप कैसे हैं? आशा है सब ठीक होगा।",
+          "transliteration": "namaste! āp kaise haiṃ? āśā hai sab ṭhīk hogā.",
+          "focus": "greeting prosody, question and statement intonation, natural conversation"
+        },
+        {
+          "id": 30,
+          "text": "सुप्रभात। आज का दिन बहुत सुंदर है। मौसम भी अच्छा लग रहा है।",
+          "transliteration": "suprabhāt. āj kā din bahut sundar hai. mausam bhī acchā lag rahā hai.",
+          "focus": "natural conversational tone, cluster /pr/, full sentence prosody"
+        }
+      ]
+    }
+  }
+}

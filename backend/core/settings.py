@@ -39,3 +39,6 @@ MODELS_DIR = PROJECT_ROOT / "models"
 
 TTS_MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 TTS_OUTPUT_DIR = DATA_DIR / "exports"
+
+SCRIPTS_DIR = DATA_DIR / "scripts"
+DEFAULT_PROMPTS_FILE = SCRIPTS_DIR / "default_prompts.json"
