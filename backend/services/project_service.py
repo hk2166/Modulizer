@@ -8,11 +8,11 @@ from backend.core.settings import DATA_DIR
 
 def create_project(name: str) -> dict:
     project_id = str(uuid4())
-    prject_dir = DATA_DIR / 'projects' / project_id
+    project_dir = DATA_DIR / 'projects' / project_id
 
     #create all subdirectories
-    from subdir in ['raw', 'processed', 'checkpoints', 'exports', 'metadata']:
-        (prject_dir / subdir).mkdir(parents=True, exist_ok=True)
+    for subdir in ['raw', 'processed', 'checkpoints', 'exports', 'metadata']: 
+        (project_dir / subdir).mkdir(parents=True, exist_ok=True)
 
     #building metadata
     metadata = {
