@@ -23,49 +23,51 @@ Most users only need Quick Clone. Voice Profile is for power users who want stud
 
 ```mermaid
 graph TB
-    subgraph "Tauri Desktop App"
-        UI["Frontend UI<br/>(Gradio MVP → React/Svelte)"]
+    UI["Frontend UI<br/>Gradio MVP, then React/Svelte"]
+
+    subgraph Sidecar["Python Sidecar"]
+        API["FastAPI Server<br/>localhost:random_port"]
+
+        subgraph Routers
+            R1["projects router"]
+            R2["jobs router"]
+            R3["tts, system, health"]
+        end
+
+        subgraph Services
+            PS["project_service"]
+            IS["inference_service"]
+        end
+
+        subgraph Audio["Audio Pipeline"]
+            REC["recorder.py"]
+            VAL["validator.py"]
+            PRE["preprocessor.py"]
+            TRA["transcriber.py"]
+        end
+
+        subgraph Engines
+            XTTS["XTTS v2<br/>Coqui TTS"]
+            WHIS["faster-whisper<br/>Whisper base"]
+        end
+
+        JM["JobManager"]
+        HW["hardware.py"]
     end
 
-    subgraph "Sidecar (Python)"
-        API["FastAPI Server<br/>127.0.0.1:random_port"]
-
-        subgraph "Routers"
-            R1[/projects/]
-            R2[/jobs/]
-            R3[/tts /system /health]
-        end
-
-        subgraph "Services"
-            PS[project_service]
-            IS[inference_service]
-        end
-
-        subgraph "Audio Pipeline"
-            REC[recorder.py]
-            VAL[validator.py]
-            PRE[preprocessor.py]
-            TRA[transcriber.py]
-        end
-
-        subgraph "Engines"
-            XTTS["XTTS v2<br/>(Coqui TTS)"]
-            WHIS["faster-whisper<br/>(Whisper base)"]
-        end
-
-        JM[JobManager]
-        HW[hardware.py]
-    end
-
-    subgraph "User Data Dir"
-        FS["%APPDATA%/VoiceForge/<br/>├─ projects/{id}/<br/>│  ├─ raw/<br/>│  ├─ processed/<br/>│  ├─ checkpoints/<br/>│  └─ metadata/<br/>├─ models/<br/>└─ logs/"]
+    subgraph UserData["User Data Directory"]
+        FS["APPDATA/VoiceForge<br/>projects/id/raw<br/>projects/id/processed<br/>projects/id/checkpoints<br/>projects/id/metadata<br/>models/<br/>logs/"]
     end
 
     UI -->|HTTP| API
-    API --> R1 & R2 & R3
+    API --> R1
+    API --> R2
+    API --> R3
     R1 --> PS
     R3 --> IS
-    R1 --> REC & VAL & PRE
+    R1 --> REC
+    R1 --> VAL
+    R1 --> PRE
     R1 --> JM
     IS --> XTTS
     TRA --> WHIS
@@ -85,27 +87,27 @@ This is what 90% of users will use. One recording, instant results.
 
 ```mermaid
 flowchart TD
-    Start([User opens VoiceForge]) --> Check{First run?}
-    Check -->|Yes| Download[Download XTTS v2<br/>~2 GB, one time]
-    Check -->|No| Home[Home screen]
+    Start(["User opens VoiceForge"]) --> Check{"First run?"}
+    Check -->|Yes| Download["Download XTTS v2<br/>about 2 GB one time"]
+    Check -->|No| Home["Home screen"]
     Download --> Home
 
-    Home --> NewProj[Create new project]
-    NewProj --> Record[Record one prompt<br/>6–10 seconds]
+    Home --> NewProj["Create new project"]
+    NewProj --> Record["Record one prompt<br/>6 to 10 seconds"]
 
-    Record --> Validate{Audio quality<br/>check}
-    Validate -->|Too quiet / clipping / silent| RetryFeedback["Show inline feedback:<br/>'Try again — too quiet'"]
+    Record --> Validate{"Audio quality check"}
+    Validate -->|Too quiet, clipping, or silent| RetryFeedback["Show inline feedback<br/>Try again, too quiet"]
     RetryFeedback --> Record
-    Validate -->|Good| Preprocess[Auto-preprocess:<br/>resample 24kHz mono,<br/>trim silence,<br/>normalize loudness]
+    Validate -->|Good| Preprocess["Auto-preprocess<br/>resample 24kHz mono<br/>trim silence<br/>normalize loudness"]
 
-    Preprocess --> ReadyText[Prompt user for text]
-    ReadyText --> Generate[XTTS generates speech<br/>using clip as reference]
-    Generate --> Playback[Play generated audio<br/>+ download .wav]
+    Preprocess --> ReadyText["Prompt user for text"]
+    ReadyText --> Generate["XTTS generates speech<br/>using clip as reference"]
+    Generate --> Playback["Play generated audio<br/>plus download wav"]
 
-    Playback --> Decision{User wants<br/>more?}
+    Playback --> Decision{"User wants more?"}
     Decision -->|Generate more| ReadyText
-    Decision -->|Better quality?| Upgrade[Offer Voice Profile flow]
-    Decision -->|Done| End([Close app])
+    Decision -->|Better quality| Upgrade["Offer Voice Profile flow"]
+    Decision -->|Done| End(["Close app"])
 
     style Record fill:#e1f5ff
     style Generate fill:#fff4e1
@@ -126,37 +128,37 @@ Strictly opt-in, hardware-gated, with explicit time and resource warnings before
 
 ```mermaid
 flowchart TD
-    Start([User clicks 'Set up Voice Profile']) --> HWCheck{Hardware check}
+    Start(["User clicks Set up Voice Profile"]) --> HWCheck{"Hardware check"}
 
-    HWCheck -->|No GPU| Refuse["Refuse with friendly message:<br/>'Voice Profile needs a GPU.<br/>Try Quick Clone instead.'"]
-    HWCheck -->|GPU < 4GB VRAM| Refuse2["Refuse with same message"]
-    HWCheck -->|Disk < 5GB free| RefuseDisk[Refuse with cleanup tip]
-    HWCheck -->|GPU 4–8 GB| LowVram[low_vram_mode = true]
-    HWCheck -->|GPU ≥ 8 GB| Standard[Standard config]
+    HWCheck -->|No GPU| Refuse["Refuse with friendly message<br/>Voice Profile needs a GPU<br/>Try Quick Clone instead"]
+    HWCheck -->|GPU under 4GB VRAM| Refuse2["Refuse with same message"]
+    HWCheck -->|Disk under 5GB free| RefuseDisk["Refuse with cleanup tip"]
+    HWCheck -->|GPU 4 to 8 GB| LowVram["low_vram_mode = true"]
+    HWCheck -->|GPU 8 GB or more| Standard["Standard config"]
 
     LowVram --> Disclose
     Standard --> Disclose
 
-    Disclose["Pre-training disclosure modal:<br/>• Estimated ~3 hours on your GTX 1650<br/>• GPU will run at full load<br/>• 30 clips needed"]
-    Disclose -->|User confirms| Record30[Record 30 phonetically diverse prompts]
-    Disclose -->|Cancel| End([Back to home])
+    Disclose["Pre-training disclosure modal<br/>Estimated about 3 hours on your GPU<br/>GPU will run at full load<br/>30 clips needed"]
+    Disclose -->|User confirms| Record30["Record 30 phonetically diverse prompts"]
+    Disclose -->|Cancel| End(["Back to home"])
 
-    Record30 --> ValLoop{Each clip<br/>validates}
-    ValLoop -->|Fails| Reread[Re-record this clip]
+    Record30 --> ValLoop{"Each clip validates"}
+    ValLoop -->|Fails| Reread["Re-record this clip"]
     Reread --> ValLoop
-    ValLoop -->|All 30 pass| Preprocess[Batch preprocess:<br/>resample, trim, normalize, denoise]
+    ValLoop -->|All 30 pass| Preprocess["Batch preprocess<br/>resample trim normalize denoise"]
 
-    Preprocess --> Transcribe[Whisper QA:<br/>verify spoken text matches script]
-    Transcribe --> StartTrain[Start training job]
+    Preprocess --> Transcribe["Whisper QA<br/>verify spoken text matches script"]
+    Transcribe --> StartTrain["Start training job"]
 
-    StartTrain --> TrainLoop["Training loop<br/>(JobManager tracks progress)"]
-    TrainLoop --> Checkpoint[Save checkpoint each round]
-    Checkpoint --> Preview[Generate validation sample<br/>for UI playback]
-    Preview --> Continue{More rounds?}
+    StartTrain --> TrainLoop["Training loop<br/>JobManager tracks progress"]
+    TrainLoop --> Checkpoint["Save checkpoint each round"]
+    Checkpoint --> Preview["Generate validation sample<br/>for UI playback"]
+    Preview --> Continue{"More rounds?"}
     Continue -->|Yes| TrainLoop
-    Continue -->|Done / early stop| Done["Voice Profile ready<br/>Save best checkpoint"]
+    Continue -->|Done or early stop| Done["Voice Profile ready<br/>Save best checkpoint"]
 
-    Done --> Use[Synthesize using fine-tuned profile<br/>instead of reference clip]
+    Done --> Use["Synthesize using fine-tuned profile<br/>instead of reference clip"]
 
     style HWCheck fill:#ffe1e1
     style Disclose fill:#fff4e1
@@ -181,34 +183,44 @@ Every recorded clip goes through this pipeline before it can be used.
 
 ```mermaid
 flowchart LR
-    Upload[/Multipart upload<br/>POST /clips/]
-    Upload --> Save["recorder.save_clip()<br/>writes raw/{uuid}.wav"]
-    Save --> Validate["validator.validate_clip()"]
+    Upload["Multipart upload<br/>POST /clips"]
+    Upload --> Save["recorder.save_clip<br/>writes raw/uuid.wav"]
+    Save --> Validate["validator.validate_clip"]
 
-    subgraph "Validation checks"
-        V1[Duration 3–15s]
-        V2[Sample rate ≥ 24 kHz]
-        V3[Peak < -1 dBFS<br/>no clipping]
-        V4[SNR ≥ 20 dB<br/>not too noisy]
-        V5[Silence ratio < 70%]
+    subgraph Checks["Validation checks"]
+        V1["Duration 3 to 15s"]
+        V2["Sample rate ≥ 24 kHz"]
+        V3["Peak below -1 dBFS<br/>no clipping"]
+        V4["SNR ≥ 20 dB<br/>not too noisy"]
+        V5["Silence ratio under 70 percent"]
     end
 
-    Validate --> V1 & V2 & V3 & V4 & V5
-    V1 & V2 & V3 & V4 & V5 --> Result{All pass?}
-    Result -->|No| FriendlyErr["Friendly error to UI:<br/>'Move closer to mic'"]
-    Result -->|Yes| Pre["preprocessor.preprocess_clip()"]
+    Validate --> V1
+    Validate --> V2
+    Validate --> V3
+    Validate --> V4
+    Validate --> V5
 
-    subgraph "Preprocess pipeline"
-        P1[Load + mono]
-        P2[Resample to 24 kHz]
-        P3[Trim silence librosa]
-        P4[Optional spectral denoise]
-        P5[Peak normalize -3 dBFS]
-        P6[Save processed/{uuid}.wav]
+    V1 --> Result{All pass?}
+    V2 --> Result
+    V3 --> Result
+    V4 --> Result
+    V5 --> Result
+
+    Result -->|No| FriendlyErr["Friendly error to UI<br/>Move closer to mic"]
+    Result -->|Yes| Pre["preprocessor.preprocess_clip"]
+
+    subgraph Pipeline["Preprocess pipeline"]
+        P1["Load and convert to mono"]
+        P2["Resample to 24 kHz"]
+        P3["Trim silence with librosa"]
+        P4["Optional spectral denoise"]
+        P5["Peak normalize to -3 dBFS"]
+        P6["Save processed/uuid.wav"]
     end
 
     Pre --> P1 --> P2 --> P3 --> P4 --> P5 --> P6
-    P6 --> Ready[Clip ready for use]
+    P6 --> Ready["Clip ready for use"]
 
     style FriendlyErr fill:#ffcccc
     style Ready fill:#ccffcc
@@ -234,35 +246,35 @@ sequenceDiagram
 
     Note over UI,FS: Quick Clone flow
 
-    UI->>API: POST /projects {"name": "..."}
-    API->>FS: mkdir data/projects/{id}/
+    UI->>API: POST /projects with name
+    API->>FS: mkdir data/projects/id
     API->>FS: write metadata/project.json
-    API-->>UI: 201 {id, name, status: "created"}
+    API-->>UI: 201 returns id and name
 
-    UI->>API: POST /projects/{id}/clips (multipart)
-    API->>FS: save raw/{clip_id}.wav
-    API->>API: validate_clip()
-    API-->>UI: 201 {clip_id, valid, errors}
+    UI->>API: POST /projects/id/clips multipart
+    API->>FS: save raw/clip_id.wav
+    API->>API: validate_clip
+    API-->>UI: 201 returns clip_id and valid status
 
-    UI->>API: POST /projects/{id}/preprocess
-    API->>JM: create_job("preprocess")
-    API-->>UI: 202 {job_id, status: "started"}
+    UI->>API: POST /projects/id/preprocess
+    API->>JM: create_job preprocess
+    API-->>UI: 202 returns job_id
 
     par Background work
-        JM->>API: preprocess_clip() per clip
-        API->>FS: write processed/{clip_id}.wav
+        JM->>API: preprocess_clip per clip
+        API->>FS: write processed/clip_id.wav
         JM->>JM: update_progress, complete_job
     end
 
     loop Poll status
-        UI->>API: GET /jobs/{job_id}
-        API->>JM: get_job(job_id)
-        API-->>UI: {status, progress, result}
+        UI->>API: GET /jobs/job_id
+        API->>JM: get_job
+        API-->>UI: returns status, progress, result
     end
 
-    UI->>API: POST /tts {text, speaker_wav: processed/x.wav}
+    UI->>API: POST /tts with text and speaker_wav
     API->>API: inference_service.generate_speech
-    API-->>UI: 200 {output: path/to/output.wav}
+    API-->>UI: 200 returns output wav path
 ```
 
 ### Endpoints
