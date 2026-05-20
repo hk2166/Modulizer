@@ -49,4 +49,5 @@ htmlcov/
 # ── Generated audio (keep data/projects/*/raw/ for version control if desired)
 *.wav
 !data/projects/*/raw/*.wav
-/home/ubspace/Desktop/voiceforge/TASKS.md
+
+TASKS.md
