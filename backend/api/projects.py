@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, File, UploadFile
 from pydantic import BaseModel, Field
 from backend.audio.validator import validate_clip
-from backend.audio.recorder import save_clip, RecorderError
+from backend.audio.recorder import save_clip, RecorderError, delete_clip, list_clips
+
 
 from backend.services.project_service import create_project, get_project
 
@@ -51,3 +52,23 @@ async def upload_clips(project_id: str, file: UploadFile = File(...)):
         "errors": validation.errors,
         "warning":validation.warnings,
     }
+
+@router.delete("/{project_id}/clips/{clip_id}", status_code=204)
+def remove_clip(project_id: str, clip_id: str):
+    project = get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
+
+
+    deleted = delete_clip(project_id, clip_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No clip found with id: {clip_id}")
+
+
+@router.get("/{project_id}/clips")
+def get_all_clips(project_id: str):
+    project = get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
+    
+    return list_clips(project_id)
