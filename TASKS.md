@@ -49,7 +49,7 @@ Goal: user can record 30 clips through a guided UI, app validates and cleans aud
 
 ### API
 
-- [ ] `POST /projects` — create a new voice project
+- [x] `POST /projects` — create a new voice project
 - [ ] `GET /projects/{id}` — project state, clip count, validation status
 - [ ] `POST /projects/{id}/clips` — upload a clip (multipart)
 - [ ] `DELETE /projects/{id}/clips/{clip_id}` — re-record support
