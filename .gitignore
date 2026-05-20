@@ -1,0 +1,51 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environment ───────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Environment / secrets ─────────────────────────────────────
+.env
+.env.*
+*.pem
+
+# ── Data directories (large/generated files) ──────────────────
+data/cache/
+data/temp/
+data/logs/
+data/exports/
+data/projects/*/processed/
+data/projects/*/checkpoints/
+data/projects/*/exports/
+
+# ── Models (downloaded at runtime, too large for git) ─────────
+models/
+
+# ── IDE / editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS files ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Testing / coverage ────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Generated audio (keep data/projects/*/raw/ for version control if desired)
+*.wav
+!data/projects/*/raw/*.wav

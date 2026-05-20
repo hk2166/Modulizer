@@ -1,0 +1,203 @@
+### VoiceForge API Requests
+### Base URL: http://127.0.0.1:8000
+### Use with VS Code REST Client extension or JetBrains HTTP Client
+
+@base = http://127.0.0.1:8000
+
+
+# ─────────────────────────────────────────────
+# CORE
+# ─────────────────────────────────────────────
+
+### Root — check backend is running
+GET {{base}}/
+
+### Health check
+GET {{base}}/health
+
+### System profile — GPU, VRAM, RAM, disk, OS
+GET {{base}}/system
+
+
+# ─────────────────────────────────────────────
+# INFERENCE — Text-to-Speech
+# ─────────────────────────────────────────────
+
+### TTS — basic synthesis using built-in speaker (no voice cloning)
+POST {{base}}/tts
+Content-Type: application/json
+
+{
+  "text": "Hello, this is a test of the VoiceForge system.",
+  "language": "en"
+}
+
+###
+
+### TTS — voice cloning using a reference audio file
+### speaker_wav must be an absolute path on the server machine
+POST {{base}}/tts
+Content-Type: application/json
+
+{
+  "text": "Hello, this is my cloned voice speaking.",
+  "speaker_wav": "/home/ubuntu/Desktop/voiceforge/data/projects/demo_project/raw/clip_01.wav",
+  "language": "en"
+}
+
+###
+
+### TTS — different language (Spanish)
+POST {{base}}/tts
+Content-Type: application/json
+
+{
+  "text": "Hola, esta es una prueba del sistema VoiceForge.",
+  "language": "es"
+}
+
+###
+
+### TTS — different language (French)
+POST {{base}}/tts
+Content-Type: application/json
+
+{
+  "text": "Bonjour, ceci est un test du système VoiceForge.",
+  "language": "fr"
+}
+
+
+# ─────────────────────────────────────────────
+# PROJECTS  (planned — M1)
+# ─────────────────────────────────────────────
+
+### Create a new voice project
+# POST {{base}}/projects
+# Content-Type: application/json
+#
+# {
+#   "name": "my_voice",
+#   "language": "en"
+# }
+
+###
+
+### Get project details + clip count + status
+# GET {{base}}/projects/demo_project
+
+###
+
+### List all projects
+# GET {{base}}/projects
+
+###
+
+### Delete a project
+# DELETE {{base}}/projects/demo_project
+
+
+# ─────────────────────────────────────────────
+# CLIPS  (planned — M1)
+# ─────────────────────────────────────────────
+
+### Upload a recording clip (multipart)
+# POST {{base}}/projects/demo_project/clips
+# Content-Type: multipart/form-data; boundary=boundary
+#
+# --boundary
+# Content-Disposition: form-data; name="file"; filename="clip_01.wav"
+# Content-Type: audio/wav
+#
+# < ./data/projects/demo_project/raw/clip_01.wav
+# --boundary--
+
+###
+
+### List clips for a project
+# GET {{base}}/projects/demo_project/clips
+
+###
+
+### Delete a clip (to re-record)
+# DELETE {{base}}/projects/demo_project/clips/clip_01
+
+
+# ─────────────────────────────────────────────
+# PREPROCESSING  (planned — M1)
+# ─────────────────────────────────────────────
+
+### Trigger preprocessing pipeline for a project
+# POST {{base}}/projects/demo_project/preprocess
+# Content-Type: application/json
+#
+# {}
+
+###
+
+### Get preprocessing status
+# GET {{base}}/jobs/{job_id}
+
+
+# ─────────────────────────────────────────────
+# TRAINING  (planned — M2)
+# ─────────────────────────────────────────────
+
+### Start training (auto-configures based on detected hardware)
+# POST {{base}}/projects/demo_project/train
+# Content-Type: application/json
+#
+# {}
+
+###
+
+### Cancel a running training job
+# POST {{base}}/jobs/{job_id}/cancel
+
+
+# ─────────────────────────────────────────────
+# JOBS  (scaffolded — M1/M2)
+# ─────────────────────────────────────────────
+
+### Poll job status
+# GET {{base}}/jobs/{job_id}
+
+###
+
+### List all jobs
+# GET {{base}}/jobs
+
+
+# ─────────────────────────────────────────────
+# SYNTHESIS WITH CLONED VOICE  (planned — M3)
+# ─────────────────────────────────────────────
+
+### Generate speech using a project's fine-tuned checkpoint
+# POST {{base}}/projects/demo_project/synthesize
+# Content-Type: application/json
+#
+# {
+#   "text": "This is my voice, generated from my trained profile.",
+#   "language": "en"
+# }
+
+
+# ─────────────────────────────────────────────
+# EXPORT / IMPORT  (planned — M3)
+# ─────────────────────────────────────────────
+
+### Export a trained voice profile as a .zip
+# POST {{base}}/projects/demo_project/export
+
+###
+
+### Import a voice profile from a .zip
+# POST {{base}}/projects/import
+# Content-Type: multipart/form-data; boundary=boundary
+#
+# --boundary
+# Content-Disposition: form-data; name="file"; filename="my_voice.zip"
+# Content-Type: application/zip
+#
+# < ./my_voice.zip
+# --boundary--
