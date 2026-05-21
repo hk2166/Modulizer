@@ -41,8 +41,8 @@ Goal: backend skeleton runs, XTTS inference works end-to-end via API.
 - [x] Wire `low_vram_mode` from `hardware.py` into a runtime config flag
 - [x] Update `.gitignore` (pycache, data/cache, data/temp, models, .env)
 - [ ] Add `pytest` smoke tests for `/health`, `/system`, `/tts`
-- [ ] **User data directory helper** — `get_user_data_dir()` returns `%APPDATA%/VoiceForge` on Windows, `~/Library/Application Support/VoiceForge` on macOS, `~/.local/share/voiceforge` on Linux. Replace all uses of `DATA_DIR` with this. Cheap now, painful later.
-- [ ] Regenerate `requirements-lock.txt` from a clean venv (current lock has ROS 2 packages from dev machine)
+- [x] **User data directory helper** — `get_user_data_dir()` returns `%APPDATA%/VoiceForge` on Windows, `~/Library/Application Support/VoiceForge` on macOS, `~/.local/share/voiceforge` on Linux. Replace all uses of `DATA_DIR` with this. Cheap now, painful later.
+- [x] Regenerate `requirements-lock.txt` from a clean venv (current lock has ROS 2 packages from dev machine)
 
 ---
 
