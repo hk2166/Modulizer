@@ -52,3 +52,18 @@ def get_project(project_id:str) -> dict:
     metadata['validated_count'] = len(processed)
 
     return metadata
+
+def get_reference_clip(project_id: str) -> str | None:
+    """
+    Return the path to the first available processed clip for this project.
+    Returns None if no processed clips exist yet.
+    """
+    processed_dir = DATA_DIR / "projects" / project_id / "processed"
+    if not processed_dir.exists():
+        return None
+
+    clips = sorted(processed_dir.glob("*.wav"))
+    if not clips:
+        return None
+
+    return str(clips[0].resolve())

@@ -4,13 +4,23 @@ from backend.jobs.instance import job_manager
 from backend.audio.preprocessor import preprocess_clip
 from backend.audio.validator import validate_clip
 from backend.audio.recorder import save_clip, RecorderError, delete_clip, list_clips
+from uuid import uuid4
 
-from backend.services.project_service import create_project, get_project
+from backend.core.settings import DATA_DIR
+
+
+from backend.services.project_service import create_project, get_project, get_reference_clip
+
+from backend.services.inference_service import generate_speech
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 class CreateProjectRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
+
+class SynthesizeRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    language: str = "en"
 
 @router.post("", status_code=201)
 def post_create_project(req: CreateProjectRequest):
@@ -118,3 +128,39 @@ def _run_preprocess(project_id: str, clips: list, job_id: str):
 
     except Exception as e:
         job_manager.fail_job(job_id, error=str(e))
+
+
+@router.post('/{project_id}/synthesize')
+def synthesize(project_id: str, req: SynthesizeRequest):
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
+    
+
+    # 2. Must have a processed clip to use as reference
+    reference = get_reference_clip(project_id)
+    if reference is None:
+        raise HTTPException(
+            status_code=422,
+            detail="No processed clips found. Upload and preprocess a recording first."
+        )
+
+    # 3. Output goes into the project's exports folder with a unique name
+    output_path = str(DATA_DIR / "projects" / project_id / "exports" / f"{uuid4()}.wav")
+
+    # 4. Generate
+    try:
+        result_path = generate_speech(
+            text=req.text,
+            output_path=output_path,
+            speaker_wav=reference,
+            language=req.language,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "output": result_path,
+        "reference_clip": reference,
+        "language": req.language,
+    }

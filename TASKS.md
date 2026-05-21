@@ -239,3 +239,44 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 - [ ] Licensing terms for exported voice models (Coqui XTTS license implications)
 - [ ] Should Quick Clone reference clip be 1 prompt or 3 short ones for better quality?
 - [ ] First-run model download: bundle XTTS in installer (~2 GB installer) vs download on first run (smaller installer, requires net)?
+
+
+
+## Fine-Tuining
+
+The 4-Step Fine-Tuning Flow
+1. Automated Audio Ingestion (The Cleanup)
+The user drops a 10-minute audio file into your GUI. Behind the scenes, the app automatically:
+
+Slices the audio into small 3-to-10-second chunks (essential to prevent VRAM overflow).
+
+Normalizes the volume and strips background noise.
+
+Extracts Pitch using the RMVPE model (the most VRAM-efficient pitch extractor available).
+
+2. Guardrailed Parameter Configuration (The VRAM Lock)
+Instead of letting the user change advanced settings that could crash their GPU, your GUI hardcodes these safe limits in the backend:
+
+Batch Size: Locked at 1 or 2 max.
+
+Precision: Forced to fp16 (half-precision) to cut VRAM usage in half.
+
+Dataset Limit: Capped at 5–15 minutes of audio.
+
+3. Asynchronous Training Queue (The Background Task)
+Because training takes 20 to 40 minutes on a GTX 1650, your GUI must decouple the frontend from the training loop:
+
+The GUI sends a command to a background worker.
+
+The UI displays a friendly Progress Bar (e.g., "Epoch 10/100") instead of freezing the window.
+
+A "VRAM Safe Mode" monitor pauses the loop if Windows suddenly demands GPU memory for other tasks.
+
+4. Model Export & VRAM Flush (The Clean Up)
+Once the training epochs are complete:
+
+The app compiles the weights into a single, lightweight .pth and .index file.
+
+It saves these files to a local models/ directory mapped to that voice's name.
+
+Crucial Step: The Python backend immediately triggers torch.cuda.empty_cache() to completely wipe the GPU memory so the user can immediately use their new voice model without restarting the app.
