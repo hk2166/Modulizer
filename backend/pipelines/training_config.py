@@ -112,7 +112,18 @@ class TrainingPlan:
     eval_batch_size: int              # Same, for eval set
     grad_accum_steps: int = 1         # Simulate a bigger batch over N micro-batches
     num_loader_workers: int = 0       # PyTorch DataLoader workers (0 = main process)
-    epochs: int = 6                   # XTTS fine-tuning is short — 6 rounds is typical
+
+    # --- Training duration ---
+    # We size training in *optimizer steps*, not epochs. Why:
+    #   With a small dataset (e.g. 28 clips, batch 2, accum 4) one epoch is
+    #   only ~3 weight updates. "6 epochs" sounds reasonable but actually
+    #   means ~18 updates total — nowhere near enough to move the GPT head.
+    #   Community fine-tunes converge between ~150 and ~500 optimizer steps.
+    #
+    # `target_steps` is the source of truth. `epochs` is computed from it
+    # at trainer-construction time once we know `len(train_loader)`.
+    target_steps: int = 250
+    epochs: int = 0                   # Filled in by training.py from target_steps
 
     # --- Memory / numerical knobs ---
     mixed_precision: bool = False     # fp16 / bf16 autocast
@@ -302,7 +313,7 @@ def _standard_plan(vram_gb: float) -> TrainingPlan:
         eval_batch_size=4,
         grad_accum_steps=1,
         num_loader_workers=2,
-        epochs=6,
+        target_steps=250,
         mixed_precision=True,
         precision_dtype="bf16",       # bf16 is more numerically stable than fp16
         gradient_checkpointing=False,
@@ -350,7 +361,7 @@ def _low_vram_plan(vram_gb: float) -> TrainingPlan:
         eval_batch_size=2,
         grad_accum_steps=4,           # effective batch = 8
         num_loader_workers=0,
-        epochs=6,
+        target_steps=250,
         mixed_precision=True,
         precision_dtype="fp16",       # fp16 for older GPU compatibility
         gradient_checkpointing=True,
@@ -372,31 +383,32 @@ def _low_vram_plan(vram_gb: float) -> TrainingPlan:
 
 def _estimate_minutes(vram_gb: float, batch_size: int, low_vram: bool) -> int:
     """
-    Rough wall-clock estimate for 6 epochs on ~30 clips.
+    Rough wall-clock estimate to hit `target_steps` (~250 by default) on a
+    typical ~30-clip Voice Profile dataset. Numbers come from real
+    fine-tuning runs reported in the Coqui community (we'll tighten these
+    once we have our own measurements). Treat as "expect this much give
+    or take 30%".
 
-    Numbers come from real fine-tuning runs reported in the Coqui community
-    (we'll tighten these once we have our own measurements). Treat as
-    "expect this much give or take 30%".
+    The estimate scales roughly linearly with target_steps. If you tune
+    it later (e.g. "fast mode" at 150 steps), update these accordingly.
 
-    Standard 12 GB GPU, batch 8 →  ~30 min for 6 epochs
-    Low-VRAM 6 GB, batch 2+accum →  ~90 min for 6 epochs
-    Low-VRAM 4 GB, batch 2+accum → ~150 min for 6 epochs (closer to what
-                                                          our user has)
+    Standard 12 GB GPU, batch 8 →  ~25 min for 250 steps
+    Low-VRAM 6 GB,  batch 2+accum →  ~80 min for 250 steps
+    Low-VRAM 4 GB,  batch 2+accum → ~140 min for 250 steps
     """
     if low_vram:
         # Smaller VRAM → more memory pressure → slower per-step.
-        # Linear-ish slowdown below 6 GB.
         if vram_gb >= 6.0:
-            return 90
+            return 80
         if vram_gb >= 4.0:
-            return 150
-        return 210  # 3–4 GB territory
+            return 140
+        return 200  # 3–4 GB territory
     # Standard
     if vram_gb >= 16.0:
-        return 20
+        return 18
     if vram_gb >= 12.0:
-        return 30
-    return 45  # 8–12 GB range
+        return 25
+    return 40  # 8–12 GB range
 
 
 def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:

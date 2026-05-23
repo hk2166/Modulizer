@@ -11,6 +11,14 @@ WHY THIS ORDER MATTERS:
   - Trim before normalize: don't normalize silence padding into the signal
   - Normalize last: final loudness target applied to clean, trimmed audio
 
+WHY 22.05 kHz (and not 24 kHz):
+  XTTS v2's GPT/dvae stack tokenises audio at 22050 Hz — that's the rate
+  every component upstream of HiFi-GAN expects. The decoder synthesises
+  at 24 kHz, but that's set independently in `XttsAudioConfig.output_sample_rate`.
+  If we wrote 24 kHz wavs and told the dataset loader they were 22050,
+  the model would receive an ~8% pitch-shifted signal and produce
+  metallic, robotic output. Match the GPT internal rate exactly here.
+
 KEY CONCEPTS:
 ─────────────
 • Resampling:
@@ -49,7 +57,14 @@ from backend.core.settings import DATA_DIR
 
 
 # ── Configuration ─────────────────────────────────────────────────
-TARGET_SAMPLE_RATE = 24000          # XTTS v2 native sample rate
+# 22050 Hz is the rate the XTTS GPT/dvae trains at internally. The
+# decoder (HiFi-GAN) synthesises at 24 kHz and that's set independently
+# in `XttsAudioConfig.output_sample_rate`. If we resample the dataset to
+# 24 kHz here, every training step pays a torchaudio resample back down
+# to 22050 — and worse, an off-by-~8% mismatch between the rate written
+# to disk and the rate the dataset loader assumes will produce metallic
+# pitch-shifted audio. Match the GPT internal rate exactly.
+TARGET_SAMPLE_RATE = 22050          # XTTS GPT / DVAE native rate
 TARGET_PEAK_DBFS = -3.0             # Normalize peaks to -3 dBFS
 TRIM_TOP_DB = 30                    # Silence threshold for trimming (dB below peak)
                                     # Higher = more aggressive trimming
@@ -93,6 +108,8 @@ def preprocess_clip(
         clip_id:     Clip identifier (used as output filename).
         input_path:  Path to the raw .wav file.
         denoise:     Whether to apply light spectral denoising.
+                     STRONGLY DISCOURAGED — see _spectral_denoise docstring.
+                     Reject noisy clips at the validator instead.
 
     Returns:
         PreprocessResult with output path and metadata.
@@ -122,7 +139,7 @@ def preprocess_clip(
         f"sr={original_sr}, duration={input_duration_s:.2f}s"
     )
 
-    # ── Step 2: Resample to 24 kHz ────────────────────────────────
+    # ── Step 2: Resample to 22.05 kHz ─────────────────────────────
     # librosa.resample uses a polyphase filter — high quality, no aliasing.
     # We skip this if already at target rate (no-op would waste time).
     if original_sr != TARGET_SAMPLE_RATE:
@@ -240,7 +257,19 @@ def _spectral_denoise(samples: np.ndarray, sample_rate: int) -> np.ndarray:
     """
     Light spectral subtraction denoising.
 
-    HOW IT WORKS:
+    ⚠️ DISCOURAGED — kept for completeness but off by default.
+
+    Spectral subtraction is a brutal high-frequency gate. It tends to
+    strip the very formants and breath cues that make a voice sound
+    human, leaving the audio sounding hollow / "underwater" — which is
+    *worse* than the original noise for cloning purposes. XTTS clones
+    background noise more gracefully than it clones missing formants.
+
+    The right answer is the Stage-2 validator: if SNR is too low, reject
+    the clip and prompt the user for a cleaner take. We do not save bad
+    clips by destroying their high frequencies.
+
+    HOW IT WORKS (when forced on):
       1. Take the first DENOISE_NOISE_DURATION_S seconds as a "noise sample"
          (assumes the recording starts with a moment of silence/room tone).
       2. Compute the average power spectrum of that noise sample using STFT.
@@ -254,7 +283,7 @@ def _spectral_denoise(samples: np.ndarray, sample_rate: int) -> np.ndarray:
       - Only removes steady-state noise (fan hum, AC, white noise).
       - Won't help with intermittent noise (coughs, keyboard clicks).
       - Can introduce "musical noise" artifacts if noise estimate is wrong.
-      - That's why it's optional.
+      - Strips formants → hollow / robotic timbre after cloning.
     """
     noise_samples = int(DENOISE_NOISE_DURATION_S * sample_rate)
 

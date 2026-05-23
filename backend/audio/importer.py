@@ -6,46 +6,68 @@ WHAT THIS DOES
 User uploads a 10-minute interview, podcast, or video (or anything with
 sparse, scattered speech). We:
 
-  1. Use ffmpeg to extract / convert to a single mono WAV at 24 kHz.
+  1. Use ffmpeg to extract / convert to a single mono WAV at 22.05 kHz.
   2. Detect non-silent (speech) bursts using energy thresholding.
-  3. **Concatenate** all the speech together with tiny gaps between bursts.
-  4. Slice the resulting continuous track into uniform ~10-second clips.
+  3. Cut clips ONLY at natural silence boundaries — never mid-word.
+  4. Produce variable-length clips in the [3 s, 15 s] window XTTS likes.
   5. Save each clip into the project, validated + preprocessed.
 
-WHY CONCATENATE-THEN-CHUNK INSTEAD OF FILTER-BY-LENGTH
-───────────────────────────────────────────────────────
-Naive silence-splitting + length filter throws away every burst under 3s.
-A recording with scattered speech (a few words → silence → a sentence →
-silence → ...) would produce zero usable clips even though it might have
-several minutes of usable speech total.
+WHY NATURAL-BOUNDARY CUTS, NOT BLIND TIME-SLICING
+─────────────────────────────────────────────────
+A naive "concatenate everything, then chop into uniform 10-second pieces"
+strategy looks tidy on paper but cuts straight through words. The audio
+in clip N ends mid-syllable; clip N+1 starts mid-syllable. Whisper then
+transcribes those fragments as garbled half-words, and the (audio, text)
+pairs in the dataset stop matching reality. The model learns to stutter
+and produces unnatural prosody at inference time.
 
-Concatenating first lets us salvage every bit of audio. Chunking afterward
-gives us uniform clip sizes XTTS likes. Works for both:
-  - Continuous speech (podcasts, monologues): bursts are long, gaps short.
-    Chunks just slice the natural flow into 10-second pieces.
-  - Scattered speech (voicemails, conversational recordings): bursts are
-    short, gaps long. We glue them together and ship 10-second compilations.
+So we cut **only at silences the speaker actually made**:
+  - Each silence-bounded burst is a candidate clip.
+  - Bursts that are already 3–15 s become a clip as-is.
+  - Bursts shorter than 3 s get glued onto neighbours (with the original
+    silence preserved between them) until we reach 3 s.
+  - Bursts longer than 15 s get re-split at the longest internal silence
+    found via a stricter silence threshold; we never just chop at a
+    fixed offset.
+
+The output is variable-length clips that all begin and end on a real
+pause. Whisper transcribes them cleanly. Lengths naturally vary between
+3 and ~15 s, exactly what XTTS expects.
 
 KEY CONCEPTS
 ────────────
-• ffmpeg pipeline: source → mono → 24 kHz → WAV float32. Works for any
-  format ffmpeg supports (mp3, mp4, mov, m4a, ogg, flac, webm, ...).
+• ffmpeg pipeline: source → mono → 22.05 kHz → WAV. Works for any format
+  ffmpeg supports (mp3, mp4, mov, m4a, ogg, flac, webm, ...).
 
 • Silence-based detection (librosa.effects.split):
   - Looks at frame energy in dB.
   - Anywhere energy stays below `top_db` for a while = silence.
   - Returns (start, end) sample indices for each non-silent region.
 
-• Concatenation gap (INTRA_CLIP_GAP_MS):
-  - We don't smash bursts directly together; that can audibly merge
-    the last word of one burst with the first of the next ("hello"
-    + "world" → "helloworld").
-  - 200ms of silence between bursts feels natural and matches how
-    speakers actually pause.
+• Greedy merge with target window:
+  - Adjacent short bursts get joined (along with the silence the speaker
+    actually left between them) until total length ≥ MIN_SEGMENT_S.
+  - We stop adding bursts as soon as the running total would exceed
+    MAX_SEGMENT_S — that becomes the next clip's first burst.
+
+• Edge padding (EDGE_PAD_MS):
+  - Plosives ("p", "t", "k") have a tiny burst of silence before the
+    actual sound. If we cut exactly at the silence boundary we can
+    slice that off and the consonant becomes inaudible.
+  - 80 ms of pre-roll / post-roll keeps every consonant intact.
 
 • Drop tiny bursts (DROP_TINY_BURST_MS):
-  - 50ms of "speech" is almost always a click, breath, or noise.
-  - We filter these out before concatenating to keep the corpus clean.
+  - 150 ms of "speech" is almost always a click, breath, or noise.
+  - We filter these out before merging to keep the corpus clean.
+
+WHAT WE DELIBERATELY DO **NOT** DO
+──────────────────────────────────
+• We do not pad or trim clips to a target length. The model handles
+  variable lengths fine; forcing a uniform length destroys the very
+  silence-boundary alignment that makes this approach work.
+• We do not run a neural VAD here (silero-vad, webrtc-vad). Energy-based
+  detection on the cleaned ffmpeg output is good enough for our SNR
+  range and avoids pulling in an extra model + torch hub call.
 """
 
 from __future__ import annotations
@@ -71,20 +93,26 @@ from backend.core.settings import DATA_DIR
 
 # ── Configuration ─────────────────────────────────────────────────
 MIN_SEGMENT_S = 3.0           # Below this is too short for XTTS reference
-MAX_SEGMENT_S = 14.0          # XTTS likes ≤15s; we leave headroom for padding
+MAX_SEGMENT_S = 14.0          # XTTS likes ≤15 s; we leave headroom for padding
 SILENCE_TOP_DB = 35           # Energy this many dB below peak = silence
-EDGE_PAD_MS = 80              # Pad start/end of each segment with silence so
+EDGE_PAD_MS = 80              # Pad start/end of each clip with silence so
                               # plosives ("p", "t", "k") don't get clipped
-MAX_SEGMENTS_PER_IMPORT = 30  # Cap to avoid swamping the project with tiny clips
+MAX_SEGMENTS_PER_IMPORT = 30  # Cap to avoid swamping the project with clips
 
-# Concatenation strategy — for recordings with scattered speech (lots of
-# short bursts separated by silence), we glue all speech together and then
-# slice it into uniform target-length clips. See _concat_and_chunk.
-TARGET_CLIP_S = 10.0          # Aim for ~10s per generated clip
-INTRA_CLIP_GAP_MS = 200       # Tiny silence between glued bursts so words
-                              # don't run into each other unnaturally
+# Greedy merge parameters — when individual silence-bounded bursts are
+# too short to stand on their own, we glue adjacent bursts together
+# (preserving the natural silence between them) until the running total
+# reaches the target window.
+TARGET_CLIP_S = 10.0          # Aim ~10 s per merged clip when growing
+                              # short bursts; max is still MAX_SEGMENT_S
 DROP_TINY_BURST_MS = 150      # Drop micro-fragments below this length
                               # (likely noise, not speech)
+
+# When a single burst exceeds MAX_SEGMENT_S we re-run silence detection
+# inside it with a stricter (more sensitive) threshold to find an
+# interior pause to split at. We never chop at a fixed offset.
+INNER_SPLIT_TOP_DB = 25       # Stricter than SILENCE_TOP_DB → finds even
+                              # subtle within-sentence pauses
 
 
 @dataclass
@@ -173,14 +201,13 @@ def import_recording(project_id: str, source_path: str | Path) -> ImportResult:
                 error="Couldn't find any clear speech in this recording.",
             )
 
-        # ── Step 3: Concatenate all the speech, then re-chunk ─────
-        # This handles two cases uniformly:
-        #   a) Continuous speech: most segments are already long enough.
-        #   b) Spotty speech (your case): individual bursts are too short,
-        #      but glued together they make plenty of usable clips.
-        #
-        # We end up with uniform ~10s clips regardless of source rhythm.
-        chunks = _concat_and_chunk(samples, sr, segments)
+        # ── Step 3: Cut at natural silence boundaries ─────────────
+        # No blind time-slicing — we keep cuts where the speaker
+        # actually paused. Bursts that are already 3–15 s become a
+        # clip directly. Short bursts get glued to neighbours (with
+        # the original silence preserved) until they reach 3 s. Long
+        # bursts get re-split at their longest internal silence.
+        chunks = _segments_to_clips(samples, sr, segments)
 
         if not chunks:
             return ImportResult(
@@ -205,7 +232,7 @@ def import_recording(project_id: str, source_path: str | Path) -> ImportResult:
 
         logger.info(
             f"importer: imported {len(clip_ids)} clips from {source_path.name} "
-            f"({len(segments)} speech bursts → {len(chunks)} ~{TARGET_CLIP_S:.0f}s clips)"
+            f"({len(segments)} speech bursts → {len(chunks)} natural-boundary clips)"
         )
 
         return ImportResult(
@@ -247,7 +274,7 @@ def _ffmpeg_extract_audio(source: Path, output_wav: Path) -> None:
       -i source      input file
       -vn            drop video stream (we only want audio)
       -ac 1          mono
-      -ar 24000      24 kHz (matches XTTS native rate; saves a resample later)
+      -ar 22050      22.05 kHz (matches preprocessor / XTTS GPT internal rate)
       -acodec pcm_s16le  16-bit signed little-endian PCM (standard WAV)
       -loglevel error    only show actual errors, not progress noise
     """
@@ -305,99 +332,149 @@ def _split_into_segments(samples: np.ndarray, sr: int) -> list[tuple[int, int]]:
     return [(int(s), int(e)) for s, e in intervals]
 
 
-def _concat_and_chunk(
+def _segments_to_clips(
     samples: np.ndarray,
     sr: int,
     segments: list[tuple[int, int]],
 ) -> list[np.ndarray]:
     """
-    Glue all speech segments together, then slice into ~TARGET_CLIP_S clips.
+    Turn raw silence-bounded speech bursts into XTTS-ready clips.
 
-    Why this approach:
-      Naive silence-splitting throws away short bursts. A recording with
-      lots of brief speech ("Hi" — silence — "How are you" — silence — ...)
-      ends up producing zero usable clips because each piece is under the
-      3s minimum.
+    Cuts always land where the speaker actually paused — never mid-word.
+    Each output clip is float32, ≥ MIN_SEGMENT_S and ≤ MAX_SEGMENT_S
+    (plus EDGE_PAD_MS of pre/post-roll for plosive integrity).
 
-      Concatenating first means we can salvage every bit of speech, then
-      decide how to package it.
+    Per-burst dispatch:
+      (a) min ≤ burst ≤ max → emit as a single clip.
+      (b) burst > max       → re-detect silences inside the burst with
+                              INNER_SPLIT_TOP_DB (more sensitive than the
+                              outer pass) and pack the resulting sub-bursts
+                              greedily into clips that respect [min, max].
+      (c) burst < min       → accumulate with following bursts. We slice
+                              the *original waveform* across them, which
+                              preserves the natural silence between bursts
+                              instead of jamming words together.
 
-    Steps:
-      1. Drop ultra-short bursts (< DROP_TINY_BURST_MS). Likely noise.
-      2. Insert a tiny silence between bursts so words don't smush together.
-         This silence is too short to hurt cloning but long enough to avoid
-         "gluing two words into one weird hybrid."
-      3. Concatenate everything into one continuous speech track.
-      4. Chunk the track into TARGET_CLIP_S windows.
-      5. The last chunk may be short — keep it if ≥ MIN_SEGMENT_S, else drop.
+    DROP_TINY_BURST_MS bursts are filtered up front (clicks, breaths, noise).
 
     Args:
-      samples:  full audio waveform.
+      samples:  full audio waveform (float32).
       sr:       sample rate.
-      segments: silence-split (start,end) sample indices.
+      segments: silence-split (start,end) sample indices, in source order.
 
     Returns:
-      List of float32 ndarrays, each ~TARGET_CLIP_S long.
+      List of float32 ndarrays, each a natural-boundary clip.
     """
     min_burst_n = int((DROP_TINY_BURST_MS / 1000.0) * sr)
     pad_n_edge = int((EDGE_PAD_MS / 1000.0) * sr)
-    gap_n = int((INTRA_CLIP_GAP_MS / 1000.0) * sr)
+    min_n = int(MIN_SEGMENT_S * sr)
+    max_n = int(MAX_SEGMENT_S * sr)
     target_n = int(TARGET_CLIP_S * sr)
-    min_keep_n = int(MIN_SEGMENT_S * sr)
 
-    # ── Step 1: extract speech bursts above the noise threshold ───
-    bursts: list[np.ndarray] = []
-    for start, end in segments:
-        if end - start < min_burst_n:
-            continue
-        # Add a small edge pad so plosives at burst boundaries are intact.
-        s = max(0, start - pad_n_edge)
-        e = min(len(samples), end + pad_n_edge)
-        bursts.append(samples[s:e])
-
+    # Filter out noise-level micro-bursts before we plan anything.
+    bursts = [(s, e) for s, e in segments if (e - s) >= min_burst_n]
     if not bursts:
         return []
 
-    total_speech_n = sum(len(b) for b in bursts)
+    total_speech_n = sum(e - s for s, e in bursts)
     logger.info(
         f"importer: kept {len(bursts)} speech bursts "
         f"({total_speech_n / sr:.1f}s of speech total)"
     )
 
-    # If we don't even have one full clip's worth of speech, bail out
-    # rather than producing a weirdly short single output.
-    if total_speech_n < min_keep_n:
-        return []
+    clips: list[np.ndarray] = []
 
-    # ── Step 2 & 3: glue with small silence gaps ──────────────────
-    silence = np.zeros(gap_n, dtype=np.float32)
-    glued_parts: list[np.ndarray] = []
-    for i, b in enumerate(bursts):
-        if i > 0:
-            glued_parts.append(silence)
-        glued_parts.append(b.astype(np.float32))
-    glued = np.concatenate(glued_parts)
+    def _slice_with_pad(start: int, end: int) -> np.ndarray:
+        """Take samples[start:end] with EDGE_PAD_MS of context on each side."""
+        s = max(0, start - pad_n_edge)
+        e = min(len(samples), end + pad_n_edge)
+        return samples[s:e].astype(np.float32, copy=False)
 
-    # ── Step 4: slice into TARGET_CLIP_S chunks ───────────────────
-    chunks: list[np.ndarray] = []
-    cursor = 0
-    while cursor + target_n <= len(glued):
-        chunks.append(glued[cursor:cursor + target_n])
-        cursor += target_n
+    # ── Case (c) accumulator ──────────────────────────────────────
+    # Track the *spanning window* (first burst start → last burst end)
+    # so when we flush we can pull one contiguous slice. That preserves
+    # the speaker's actual silences between bursts, which is exactly
+    # what natural-boundary cutting promises.
+    pending_start: int | None = None
+    pending_end: int | None = None
 
-    # ── Step 5: handle tail ───────────────────────────────────────
-    tail = glued[cursor:]
-    if len(tail) >= min_keep_n:
-        chunks.append(tail)
-    elif chunks:
-        # If tail is too short to stand alone but we have at least one chunk,
-        # we drop the tail rather than padding the last clip past the target.
-        # Better to lose 2s of speech than serve a Frankenstein 12s clip.
-        logger.info(
-            f"importer: dropping {len(tail)/sr:.1f}s tail (below {MIN_SEGMENT_S}s)"
-        )
+    def _flush_pending() -> None:
+        nonlocal pending_start, pending_end
+        if pending_start is None or pending_end is None:
+            return
+        if (pending_end - pending_start) >= min_n:
+            clips.append(_slice_with_pad(pending_start, pending_end))
+        # Else: too short to stand alone. Drop it — better than serving
+        # a sub-3s clip that XTTS will reject as a reference anyway.
+        pending_start = None
+        pending_end = None
 
-    return chunks
+    for start, end in bursts:
+        burst_n = end - start
+
+        # ── Case (a): perfect-size burst ──────────────────────────
+        if min_n <= burst_n <= max_n:
+            _flush_pending()
+            clips.append(_slice_with_pad(start, end))
+            continue
+
+        # ── Case (b): oversized burst, split internally ───────────
+        if burst_n > max_n:
+            _flush_pending()
+            burst_audio = samples[start:end]
+            # librosa returns offsets relative to the burst slice, so we
+            # add `start` to bring them back into absolute sample space.
+            inner = librosa.effects.split(
+                burst_audio,
+                top_db=INNER_SPLIT_TOP_DB,
+                frame_length=2048,
+                hop_length=512,
+            )
+
+            sub_start: int | None = None
+            sub_end: int | None = None
+            for s_i, e_i in inner:
+                abs_s = start + int(s_i)
+                abs_e = start + int(e_i)
+                if sub_start is None:
+                    sub_start, sub_end = abs_s, abs_e
+                    continue
+                # Would absorbing this sub-burst push the running window
+                # past max? Flush what we have and start fresh.
+                if (abs_e - sub_start) > max_n:
+                    if sub_end is not None and (sub_end - sub_start) >= min_n:
+                        clips.append(_slice_with_pad(sub_start, sub_end))
+                    sub_start, sub_end = abs_s, abs_e
+                else:
+                    sub_end = abs_e
+            # Trailing flush for the final sub-window.
+            if sub_start is not None and sub_end is not None and (sub_end - sub_start) >= min_n:
+                clips.append(_slice_with_pad(sub_start, sub_end))
+            continue
+
+        # ── Case (c): short burst, accumulate ─────────────────────
+        if pending_start is None:
+            pending_start, pending_end = start, end
+            continue
+
+        # Would adding this burst overflow max? Flush first.
+        if (end - pending_start) > max_n:
+            _flush_pending()
+            pending_start, pending_end = start, end
+            continue
+
+        pending_end = end
+
+        # Once we've grown past TARGET_CLIP_S we're in the sweet spot
+        # for an XTTS clip. Flush so the next short burst starts a new
+        # window instead of pushing toward the 14 s ceiling.
+        if (pending_end - pending_start) >= target_n:
+            _flush_pending()
+
+    # Trailing flush for any leftover accumulator.
+    _flush_pending()
+
+    return clips
 
 
 def _save_chunks(

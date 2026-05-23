@@ -531,7 +531,8 @@ def main():
     app.launch(
         server_name="127.0.0.1",
         server_port=7860,
-        inbrowser=True,
+        inbrowser=False,        # don't auto-open — keeps browser stderr noise
+                                # out of our terminal. Open the URL manually.
         theme=gr.themes.Soft(),
         allowed_paths=[str(DATA_DIR)],
     )

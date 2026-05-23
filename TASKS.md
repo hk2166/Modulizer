@@ -116,11 +116,11 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
 
 ### UX — Resource gating
 
-- [ ] **Pre-flight resource check** before kickoff:
-  - [ ] Free VRAM ≥ 3 GB → allow with low-VRAM config
-  - [ ] Free VRAM ≥ 8 GB → allow standard config
-  - [ ] No GPU → refuse with: "Voice Profile training needs a graphics card. You can use Quick Clone instead — it works without one."
-  - [ ] Free disk < 5 GB → refuse with disk-cleanup suggestion
+- [x] **Pre-flight resource check** before kickoff:
+  - [x] Free VRAM ≥ 3 GB → allow with low-VRAM config
+  - [x] Free VRAM ≥ 8 GB → allow standard config
+  - [x] No GPU → refuse with: "Voice Profile training needs a graphics card. You can use Quick Clone instead — it works without one."
+  - [x] Free disk < 5 GB → refuse with disk-cleanup suggestion
 - [ ] **Pre-training disclosure modal** showing:
   - [ ] Estimated time based on hardware (e.g. "About 3 hours on your GTX 1650")
   - [ ] Estimated power use ("Your GPU will run at full load")
@@ -136,7 +136,12 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
   - [x] GPU + ≥8 GB VRAM → standard config
   - [x] GPU + 3–8 GB VRAM → low-VRAM (fp16, gradient checkpointing, batch_size=2)
   - [x] CPU only → refuse with friendly message (no cloud fallback in v1)
-- [ ] Training loop wrapper with progress callbacks → `JobManager.update_progress`
+- [x] Training loop wrapper with progress callbacks → `JobManager.update_progress`
+  - **Quality follow-ups discovered during this work:**
+  - [ ] Switch `preprocessor.TARGET_SAMPLE_RATE` from 24000 → 22050 to align with XTTS GPT/dvae native rate. Output stays 24 kHz via the HiFi-GAN decoder. Removes a per-step torchaudio resample.
+  - [ ] Replace `importer.py` blind 10s slicing with VAD-based cuts (silero-vad). Current slicer can split words mid-syllable, which corrupts the (audio, text) alignment Whisper produces.
+  - [ ] Make `dataset_builder.py` pick a "golden reference" clip (5–7s, near-median pitch + RMS) and store its id in `manifest.json`; teach `project_service.get_reference_clip` to prefer that over `sorted(...)[0]`.
+  - [ ] Audit `preprocessor._spectral_denoise` — the path is off by default but spectral subtraction strips formants when used; consider replacing with a no-op or a learned model, not a hand-rolled gate.
 - [ ] Cooperative cancellation — training checks a flag every N batches
 - [ ] Checkpoint saving to `data/projects/{id}/checkpoints/`
 - [ ] Early-stopping / best-checkpoint selection

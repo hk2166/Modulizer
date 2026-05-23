@@ -84,6 +84,15 @@ MIN_AUDIO_SECONDS = 1.0         # Reject anything shorter — training waste
 MAX_AUDIO_SECONDS = 30.0        # XTTS reference cap; longer = wasted samples
 SPEAKER_NAME_DEFAULT = "voiceforge"   # Single-speaker datasets use a fixed name
 
+# Golden-reference scoring: the duration sweet spot for an XTTS reference
+# clip. Long enough to capture prosody, short enough to fit the conditioning
+# window without wasted compute. 6 s is the empirical centre.
+GOLDEN_DURATION_IDEAL_LO = 5.0
+GOLDEN_DURATION_IDEAL_HI = 7.0
+GOLDEN_DURATION_CENTER = 6.0
+GOLDEN_DURATION_WEIGHT = 0.7
+GOLDEN_STABILITY_WEIGHT = 0.3
+
 
 # ══════════════════════════════════════════════════════════════════
 # Result types
@@ -449,3 +458,134 @@ def _write_manifest(
         ],
     }
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# ══════════════════════════════════════════════════════════════════
+# Golden reference selection
+# ══════════════════════════════════════════════════════════════════
+
+
+def select_golden_reference(processed_dir: str | Path) -> str | None:
+    """
+    Pick the best clip to use as a default voice-cloning reference.
+
+    Used as a safety net by the inference service: when the user calls
+    `generate_speech` without an explicit `speaker_wav`, we want to grab
+    the clip from this project that's most likely to produce a clean,
+    consistent clone — not just whichever clip ffmpeg dropped first.
+
+    Scoring (weighted):
+      • Duration fit (0.7 weight)
+        XTTS clones best from references in the 5–7 s range — long enough
+        to capture prosody, short enough to stay inside the conditioning
+        window. Anything in [5,7] gets the max score; everything else is
+        penalised by its distance from 6 s.
+
+      • Pitch stability (0.3 weight)
+        Computed as 1 / variance of YIN F0 across voiced frames. Lower
+        F0 variance = steadier pitch = cleaner reference. Unvoiced frames
+        return NaN from YIN, so we filter them before computing variance —
+        otherwise a clip that's 90% silence would look perfectly stable.
+
+    We deliberately ignore amplitude: the preprocessor already normalises
+    every clip, so loudness no longer carries useful information.
+
+    Args:
+        processed_dir: absolute or relative path to a directory of .wav
+                       files (typically `data/projects/{id}/processed/`).
+
+    Returns:
+        Absolute path to the highest-scoring clip, or None if the
+        directory has no readable WAVs.
+    """
+    import numpy as np
+    import librosa
+    import soundfile as sf
+
+    processed = Path(processed_dir)
+    if not processed.exists():
+        logger.warning(f"select_golden_reference: {processed} does not exist")
+        return None
+
+    wavs = sorted(processed.glob("*.wav"))
+    if not wavs:
+        logger.warning(f"select_golden_reference: no .wav files in {processed}")
+        return None
+
+    best_path: Path | None = None
+    best_score = float("-inf")
+
+    for wav_path in wavs:
+        try:
+            audio, native_sr = sf.read(str(wav_path), dtype="float32")
+        except Exception as e:
+            logger.warning(f"select_golden_reference: skipping {wav_path.name}: {e}")
+            continue
+
+        # Multi-channel safety net — pick the first channel.
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+
+        duration = len(audio) / native_sr if native_sr else 0.0
+        if duration <= 0:
+            continue
+
+        # ── Duration fit ────────────────────────────────────────
+        if GOLDEN_DURATION_IDEAL_LO <= duration <= GOLDEN_DURATION_IDEAL_HI:
+            duration_score = 10.0
+        else:
+            # Linear penalty per second from the centre. Floor at 0 so
+            # very long or very short clips don't drag the total negative.
+            duration_score = max(0.0, 10.0 - abs(GOLDEN_DURATION_CENTER - duration))
+
+        # ── Pitch stability ─────────────────────────────────────
+        # YIN is unreliable on near-silent frames and returns NaN there.
+        # We filter to voiced frames before computing variance so a
+        # mostly-silent clip can't masquerade as "perfectly stable".
+        try:
+            f0 = librosa.yin(
+                audio,
+                fmin=librosa.note_to_hz("C2"),
+                fmax=librosa.note_to_hz("C6"),
+                sr=native_sr,
+            )
+            voiced = f0[np.isfinite(f0) & (f0 > 0)]
+            if voiced.size < 8:
+                # Not enough voiced frames to draw a conclusion either way.
+                stability_score = 0.0
+            else:
+                variance = float(np.var(voiced))
+                stability_score = 1.0 / (variance + 1e-5)
+        except Exception as e:
+            logger.warning(
+                f"select_golden_reference: pitch analysis failed for "
+                f"{wav_path.name}: {e}"
+            )
+            stability_score = 0.0
+
+        total = (duration_score * GOLDEN_DURATION_WEIGHT) + \
+                (stability_score * GOLDEN_STABILITY_WEIGHT)
+
+        logger.info(
+            f"select_golden_reference: {wav_path.name} "
+            f"dur={duration:.2f}s dur_score={duration_score:.2f} "
+            f"stab_score={stability_score:.4f} total={total:.4f}"
+        )
+
+        if total > best_score:
+            best_score = total
+            best_path = wav_path
+
+    if best_path is None:
+        # Every clip failed to read or score — fall back to the first one
+        # so callers always get *something* usable rather than a None they
+        # have to handle. The cost of a bad reference is a worse clone;
+        # the cost of None is a 500 from the inference endpoint.
+        best_path = wavs[0]
+        logger.warning(
+            f"select_golden_reference: scoring failed for all clips, "
+            f"falling back to {best_path.name}"
+        )
+
+    logger.info(f"select_golden_reference: chose {best_path.name}")
+    return str(best_path.resolve())
