@@ -23,6 +23,10 @@ numpy==1.26.4
 scipy==1.17.1
 pydub==0.25.1
 ffmpeg-python==0.2.0
+# Bundled static ffmpeg binary — used by importer.py to extract audio
+# from uploaded videos and re-encode arbitrary audio formats. Avoids
+# requiring users to install ffmpeg system-wide.
+imageio-ffmpeg==0.6.0
 
 # ── Speech-to-text (planned) ──────────────────────────────────
 faster-whisper==1.2.1

@@ -67,6 +67,8 @@ Goal: user installs the app, records one clip, types text, hears their cloned vo
   - [x] Output to `data/projects/{project}/processed/`
 - [x] `transcriber.py` — faster-whisper for clip QA (verify spoken text matches script)
 - [x] Recording prompts asset (`data/scripts/default_prompts.json`) — 30 EN + 30 HI phonetically diverse prompts
+- [x] `cleaner.py` — synthesis-targeted reference cleaning (DC offset, high-pass @ 80 Hz, RMS normalize, soft limiter). Off by default — XTTS clones better from natural processed audio.
+- [x] `importer.py` — long audio/video import via bundled ffmpeg; concatenates speech bursts and chunks into uniform ~10s clips (handles both continuous and spotty source material).
 
 ### API — Project lifecycle
 
@@ -78,25 +80,27 @@ Goal: user installs the app, records one clip, types text, hears their cloned vo
 - [x] `POST /projects/{id}/preprocess` — kick off async preprocess job
 - [x] `GET /jobs/{job_id}` — poll job status / progress / result
 - [x] All long-running work wired through `JobManager` (background tasks)
+- [x] `POST /projects/{id}/import` — multipart upload of long audio/video; segments and saves as project clips (background job)
 
 ### API — Reference cloning (synth)
 
-- [ ] `POST /projects/{id}/synthesize` — text + reference clip → generated `.wav`
+- [x] `POST /projects/{id}/synthesize` — text + reference clip → generated `.wav`
   - Picks the first valid processed clip as the reference automatically (user shouldn't choose one)
   - Accepts `text` and `language`
   - Returns generated audio path
-- [ ] `GET /projects/{id}/preview/{clip_id}` — stream a generated `.wav` back to the UI
+- [x] `GET /projects/{id}/preview/{clip_id}` — stream a generated `.wav` back to the UI
 
 ### Frontend — Gradio MVP
 
-- [ ] App shell with project picker + create-new flow
-- [ ] **First-run hardware check** — "Your machine is ready" / "Compatibility notice for fine-tuning" (Quick Clone always available)
-- [ ] **Quick Clone flow** (the main UX):
-  - [ ] Show one prompt, record button, waveform preview
-  - [ ] Inline validation feedback ("Try again — too quiet" / "Looks great")
-  - [ ] Auto-preprocess on validation pass
-  - [ ] Text input → generate → playback
-- [ ] Status panel — friendly progress messages, no percentages of loss
+- [x] App shell with project picker + create-new flow
+- [x] **First-run hardware check** — "Your machine is ready" / "Compatibility notice for fine-tuning" (Quick Clone always available)
+- [x] **Quick Clone flow** (the main UX):
+  - [x] Show one prompt, record button, waveform preview
+  - [x] Inline validation feedback ("Try again — too quiet" / "Looks great")
+  - [x] Auto-preprocess on validation pass
+  - [x] Text input → generate → playback
+- [x] Status panel — friendly progress messages, no percentages of loss
+- [x] **Long audio / video import** — drop a podcast, interview, or video; auto-segment into 10s clips usable as references (handles spotty speech via concatenate-then-chunk)
 
 ### Persistence
 
@@ -127,11 +131,11 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
 
 ### Pipeline — `backend/pipelines/training.py`
 
-- [ ] Dataset builder — convert processed clips + transcripts into XTTS training format
-- [ ] Auto-config based on `hardware.py`:
-  - [ ] GPU + ≥8 GB VRAM → standard config
-  - [ ] GPU + 3–8 GB VRAM → low-VRAM (fp16, gradient checkpointing, batch_size=2)
-  - [ ] CPU only → refuse with friendly message (no cloud fallback in v1)
+- [x] Dataset builder — convert processed clips + transcripts into XTTS training format
+- [x] Auto-config based on `hardware.py`:
+  - [x] GPU + ≥8 GB VRAM → standard config
+  - [x] GPU + 3–8 GB VRAM → low-VRAM (fp16, gradient checkpointing, batch_size=2)
+  - [x] CPU only → refuse with friendly message (no cloud fallback in v1)
 - [ ] Training loop wrapper with progress callbacks → `JobManager.update_progress`
 - [ ] Cooperative cancellation — training checks a flag every N batches
 - [ ] Checkpoint saving to `data/projects/{id}/checkpoints/`

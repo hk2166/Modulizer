@@ -230,13 +230,20 @@ def on_preprocess(project_id: str | None):
     yield "⚠️ Preprocessing is taking longer than expected. Try again."
 
 
-def on_synthesize(text: str, project_id: str | None):
-    """Generate speech and return a path the audio component can play."""
+def on_synthesize(text: str, project_id: str | None, clip_id: str | None):
+    """
+    Generate speech and return a path the audio component can play.
+
+    We require both project_id and clip_id (the latter implies a recording
+    has uploaded, validated, and preprocessed successfully).
+    """
     text = (text or "").strip()
     if not text:
         return None, "Type some text to generate speech."
     if not project_id:
         return None, "Create a project first."
+    if not clip_id:
+        return None, "Record a voice sample on the Record tab first."
 
     try:
         result = client.synthesize(project_id, text)
@@ -246,6 +253,80 @@ def on_synthesize(text: str, project_id: str | None):
     # The backend writes to a path on local disk. Gradio's gr.Audio can read
     # that path directly when filepath is the value type.
     return result["output"], "🔊 Done — hit play."
+
+
+def on_import(source_path: str | None, project_id: str | None):
+    """
+    Handle a long audio/video upload. Streams progress as the backend
+    extracts audio, segments it, and saves each segment as a clip.
+
+    Yields:
+      Markdown status messages (Gradio re-renders on each yield).
+
+    Final yield includes the new clip_id (last one created) so the user
+    can immediately go to the Generate tab.
+    """
+    if not source_path:
+        yield "Drop an audio or video file above to import.", None
+        return
+    if not project_id:
+        yield "Create a project first.", None
+        return
+
+    yield "📥 Uploading...", None
+
+    try:
+        job = client.import_recording(project_id, source_path)
+    except client.BackendError as e:
+        yield f"⚠️ Upload failed: {e}", None
+        return
+
+    job_id = job["job_id"]
+    yield "🎬 Pulling out the audio...", None
+
+    last_message = None
+    # Imports of long files can take a couple of minutes. Cap at 5 min.
+    for _ in range(300):
+        time.sleep(1)
+        try:
+            status = client.get_job(job_id)
+        except client.BackendError as e:
+            yield f"⚠️ {e}", None
+            return
+
+        msg = status.get("message")
+        if msg and msg != last_message:
+            yield f"🎬 {msg}", None
+            last_message = msg
+
+        if status["status"] == "completed":
+            result = status.get("result", {}) or {}
+            kept = result.get("segments_kept", 0)
+            found = result.get("segments_found", 0)
+            clip_ids = result.get("clip_ids", [])
+
+            if kept == 0:
+                yield (
+                    "⚠️ We couldn't find usable speech segments in that file.",
+                    None,
+                )
+                return
+
+            # Use the first imported clip as the active reference for synthesis.
+            # The user can re-import or record again to switch.
+            yield (
+                f"✨ **Imported {kept} clip{'s' if kept != 1 else ''}** "
+                f"(out of {found} speech regions found). "
+                f"You can now generate speech on the Generate tab.",
+                clip_ids[0] if clip_ids else None,
+            )
+            return
+
+        if status["status"] == "failed":
+            yield f"⚠️ {status.get('error', 'Import failed.')}", None
+            return
+
+    yield "⚠️ This is taking longer than expected. Try a shorter file.", None
 
 
 def on_back_to_picker():
@@ -264,7 +345,9 @@ def on_back_to_picker():
 def build_app() -> gr.Blocks:
     # Gradio 6 moved `theme` to launch() — we still set it here as a hint
     # for IDE introspection but it'll be applied at launch time.
-    with gr.Blocks(title="VoiceForge") as app:
+    # `analytics_enabled=False` here (Gradio 6) — keeps the app fully local,
+    # no pings to Gradio's analytics servers. Matches our local-first promise.
+    with gr.Blocks(title="VoiceForge", analytics_enabled=False) as app:
 
         # Persistent state — survives across screens. value=None = no project yet.
         project_id = gr.State(value=None)
@@ -329,6 +412,30 @@ def build_app() -> gr.Blocks:
                 # Hidden gate: only after validation passes do we enable the synth section.
                 # We bind to `last_clip_id` state — it's None until a clip validates.
 
+            with gr.Tab("Import recording"):
+                gr.Markdown(
+                    "**Got a longer recording?** Drop a video or audio file "
+                    "(podcast, interview, voice memo, etc.) and we'll split it "
+                    "into clean segments. Works with `.mp4`, `.mp3`, `.m4a`, "
+                    "`.wav`, and most other formats."
+                )
+                gr.Markdown(
+                    "<small>Why segment? The voice engine only uses about "
+                    "30 seconds of reference audio. A longer recording gives "
+                    "us many candidate segments to pick from — better quality "
+                    "than one short clip.</small>"
+                )
+                # `gr.File` accepts arbitrary uploads. We don't constrain the
+                # file_types list because ffmpeg handles almost anything;
+                # better to let the backend validate than reject good inputs early.
+                source_file = gr.File(
+                    label="Audio or video file",
+                    file_count="single",
+                    type="filepath",
+                )
+                import_btn = gr.Button("Import", variant="primary")
+                import_status = gr.Markdown("")
+
             with gr.Tab("Generate"):
                 gr.Markdown(
                     "Type any text and hit **Generate**. "
@@ -378,10 +485,18 @@ def build_app() -> gr.Blocks:
                 outputs=[preprocess_status],
             )
 
+        # Import recording (long video/audio → segmented clips)
+        # Outputs: status markdown + last_clip_id state (so Generate can use it)
+        import_btn.click(
+            fn=on_import,
+            inputs=[source_file, project_id],
+            outputs=[import_status, last_clip_id],
+        )
+
         # Generate
         gen_btn.click(
             fn=on_synthesize,
-            inputs=[text_in, project_id],
+            inputs=[text_in, project_id, last_clip_id],
             outputs=[audio_out, synth_status],
         )
 
@@ -405,13 +520,20 @@ def main():
     `server_name="127.0.0.1"` keeps it local-only (matches our local-first promise).
     `inbrowser=True` opens it automatically when you run the file.
     `theme=...` applies the visual theme (moved from Blocks() in Gradio 6).
+    `allowed_paths=...` lets Gradio serve files from our user-data dir.
+        Gradio 4+ sandboxes file serving — it only allows files inside the
+        cwd, /tmp, or explicitly allowed paths. Our backend writes generated
+        audio to ~/.local/share/voiceforge/..., which we whitelist here.
     """
+    from backend.core.settings import DATA_DIR
+
     app = build_app()
     app.launch(
         server_name="127.0.0.1",
         server_port=7860,
         inbrowser=True,
         theme=gr.themes.Soft(),
+        allowed_paths=[str(DATA_DIR)],
     )
 
 

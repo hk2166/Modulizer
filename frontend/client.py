@@ -107,6 +107,24 @@ def upload_clip(project_id: str, wav_path: str | Path) -> dict:
         return _post(f"/projects/{project_id}/clips", files=files)
 
 
+def import_recording(project_id: str, source_path: str | Path) -> dict:
+    """
+    Upload a long audio/video file. Returns: {job_id, status, filename}.
+    Poll /jobs/{job_id} until completed; the `result` field contains the
+    import summary (segments_kept, clip_ids, ...).
+    """
+    source_path = Path(source_path)
+    # Long imports may take a while to upload (big file) so use a generous timeout
+    with open(source_path, "rb") as f:
+        # Let requests guess content-type from extension
+        files = {"file": (source_path.name, f)}
+        return _post(
+            f"/projects/{project_id}/import",
+            files=files,
+            timeout=10 * 60,  # 10 min, mostly for the upload itself
+        )
+
+
 def list_clips(project_id: str) -> list[dict]:
     """List all uploaded clips for a project."""
     return _get(f"/projects/{project_id}/clips")
