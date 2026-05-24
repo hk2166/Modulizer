@@ -17,5 +17,9 @@ class Job:
     progress: int = 0
     message: str = ""
 
+    # Wall-clock estimate of remaining time in seconds. None when unknown
+    # (job hasn't started, or producer doesn't track ETA).
+    eta_seconds: int | None = None
+
     result: dict | None = None
     error: str | None = None

@@ -45,15 +45,19 @@ class JobManager:
         self,
         job_id: str,
         progress: int,
-        message: str = ""
+        message: str = "",
+        eta_seconds: int | None = None,
     ):
         job = self.jobs[job_id]
 
         job.progress = progress
         job.message = message
+        if eta_seconds is not None:
+            job.eta_seconds = eta_seconds
 
+        eta_txt = f", eta={eta_seconds}s" if eta_seconds is not None else ""
         logger.info(
-            f"Job {job.id} progress: {progress}% - {message}"
+            f"Job {job.id} progress: {progress}% - {message}{eta_txt}"
         )
 
     def get_job(self, job_id: str):

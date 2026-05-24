@@ -17,6 +17,7 @@ def get_job(job_id: str):
         "status": job.status,
         "progress": job.progress,
         "message": job.message,
+        "eta_seconds": job.eta_seconds,
         "result": job.result,
         "error": job.error,
         "created_at": job.created_at.isoformat(),

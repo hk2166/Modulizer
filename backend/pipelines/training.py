@@ -126,6 +126,10 @@ class _BridgeState:
     total_steps_planned: int = 0      # epochs * steps_per_epoch (for percent)
     epochs_done: int = 0
     last_message: str = ""
+    # ETA tracking — seeded from the static plan estimate, refined as rounds
+    # complete using observed wall-clock time. None until first round end.
+    run_started_at: float = 0.0       # time.monotonic() at on_init_end
+    last_eta_seconds: int | None = None
 
 
 class ProgressBridge:
@@ -165,7 +169,8 @@ class ProgressBridge:
         job_id: str,
         total_epochs: int,
         cancel_event: Optional[threading.Event] = None,
-        update_fn: Optional[Callable[[str, int, str], None]] = None,
+        update_fn: Optional[Callable[..., None]] = None,
+        initial_eta_seconds: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -179,13 +184,17 @@ class ProgressBridge:
                            a checkpoint).
             update_fn:     Override for testing. Defaults to the real
                            job_manager.update_progress. Signature:
-                           (job_id, percent, message) → None.
+                           (job_id, percent, message, eta_seconds=...) → None.
+            initial_eta_seconds: Static planning estimate from training_config.
+                           Used until the first round completes and we have
+                           real measurements. None = no ETA shown until then.
         """
         self.job_id = job_id
         self.total_epochs = max(1, total_epochs)
         self.cancel_event = cancel_event
         self._update_fn = update_fn or job_manager.update_progress
         self.state = _BridgeState()
+        self.state.last_eta_seconds = initial_eta_seconds
 
     # ── Coqui plumbing ────────────────────────────────────────────
 
@@ -213,6 +222,8 @@ class ProgressBridge:
         Trainer finished its constructor. Model is built, optimizer ready,
         loaders may or may not be built yet. Push a friendly start message.
         """
+        import time
+        self.state.run_started_at = time.monotonic()
         self._push(2, "Getting things ready...")
 
     def on_epoch_start(self, trainer) -> None:
@@ -267,11 +278,25 @@ class ProgressBridge:
 
     def on_epoch_end(self, trainer) -> None:
         """
-        A round finished. Bump the round counter and push a "saved progress"
+        A round finished. Bump the round counter, recompute the ETA from
+        observed wall-clock seconds-per-round, and push a "saved progress"
         message — Coqui saves a checkpoint at the end of every epoch.
         """
+        import time
+
         self.state.epochs_done = getattr(trainer, "epochs_done", self.state.epochs_done + 1)
         percent = self._compute_percent(trainer)
+
+        # Recompute ETA from real time. After at least one round we have
+        # a measured seconds-per-round; multiply by remaining rounds.
+        # Static estimates from training_config are fine for the disclosure
+        # modal but degrade fast when the planning numbers were off.
+        if self.state.run_started_at > 0 and self.state.epochs_done > 0:
+            elapsed = time.monotonic() - self.state.run_started_at
+            avg_per_round = elapsed / self.state.epochs_done
+            remaining_rounds = max(0, self.total_epochs - self.state.epochs_done)
+            self.state.last_eta_seconds = int(remaining_rounds * avg_per_round)
+
         self._push(
             percent,
             f"Saved progress (round {self.state.epochs_done} of {self.total_epochs}).",
@@ -335,7 +360,10 @@ class ProgressBridge:
         self.state.last_percent = percent
         self.state.last_message = message
         try:
-            self._update_fn(self.job_id, percent, message)
+            self._update_fn(
+                self.job_id, percent, message,
+                eta_seconds=self.state.last_eta_seconds,
+            )
         except Exception as e:
             # Never let a logging hiccup take training down.
             logger.warning(f"ProgressBridge: update_progress failed: {e}")
@@ -567,10 +595,15 @@ def run_training(
     model = GPTTrainer.init_from_config(config)
 
     # ── 5. Bridge + Trainer ───────────────────────────────────────
+    # Seed the bridge with the static estimate so the UI has an ETA from
+    # second 1. After the first round ends, on_epoch_end overrides it with
+    # the measured wall-clock value.
+    initial_eta = plan.estimated_minutes * 60 if plan.estimated_minutes else None
     bridge = ProgressBridge(
         job_id=job_id,
         total_epochs=plan.epochs,
         cancel_event=cancel_event,
+        initial_eta_seconds=initial_eta,
     )
 
     # parse_command_line_args=False is critical — Coqui otherwise eats

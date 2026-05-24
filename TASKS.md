@@ -124,10 +124,10 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
 - [ ] **Pre-training disclosure modal** showing:
   - [x] Estimated time based on hardware (e.g. "About 3 hours on your GTX 1650")
   - [x] Estimated power use ("Your GPU will run at full load")
-  - [ ] What gets saved and where
+  - [x] What gets saved and where
   - [ ] "I understand, start training" button
 - [ ] Background-safe: user can close Tauri window, training continues, status restored on relaunch
-- [ ] ETA estimation based on hardware profile, updated each round
+- [x] ETA estimation based on hardware profile, updated each round
 
 ### Pipeline — `backend/pipelines/training.py`
 
@@ -171,7 +171,7 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
 
 Goal: ship-ready product. Multi-language voices, export/import voice profiles.
 
-- [ ] Multi-language support in UI (XTTS supports 17+) — language picker
+- [x] Multi-language support in UI (XTTS supports 17+) — language picker
 - [ ] Speed/emphasis controls (sliders, not raw params)
 - [ ] Export flow:
   - [ ] `POST /projects/{id}/export` — package profile + metadata + license note as `.zip`
@@ -221,7 +221,7 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 ### Hardware + Performance
 
 - [ ] Document tested configs (GTX 1650 4GB, M3 Pro CPU, CPU-only) in README with expected times for each path
-- [ ] Memory guard: refuse training if free VRAM < threshold, suggest Quick Clone instead
+- [x] Memory guard: refuse training if free VRAM < threshold, suggest Quick Clone instead
 
 ### Observability
 
@@ -236,9 +236,9 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 
 ### UX Copy Audit
 
-- [ ] Replace any leaked jargon: "epoch" → "round", "loss" → hidden, "checkpoint" → "saved progress"
+- [x] Replace any leaked jargon: "epoch" → "round", "loss" → hidden, "checkpoint" → "saved progress"
 - [ ] Error messages always action-oriented ("Move closer to the mic" not "SNR below threshold")
-- [ ] Resource warnings in plain language ("This will use your GPU for ~3 hours") not specs
+- [x] Resource warnings in plain language ("This will use your GPU for ~3 hours") not specs
 
 ---
 

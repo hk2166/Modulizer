@@ -164,6 +164,12 @@ class TrainingDecision:
     # Echo of what we saw, useful for the UI to show "your machine: ..."
     detected_hardware: dict = field(default_factory=dict)
 
+    # Disclosure modal — what training will save and where, both as
+    # structured data (UI tables, programmatic consumers) and a friendly
+    # markdown summary for the modal copy. Both populated together.
+    data_locations: dict = field(default_factory=dict)
+    data_summary: str = ""
+
 
 # ══════════════════════════════════════════════════════════════════
 # Public API
@@ -173,6 +179,7 @@ class TrainingDecision:
 def decide_preset(
     force_preset: Optional[Preset] = None,
     train_clip_count: Optional[int] = None,
+    project_id: Optional[str] = None,
 ) -> TrainingDecision:
     """
     Inspect the local machine and pick a training preset.
@@ -185,6 +192,9 @@ def decide_preset(
                           ETA: more clips → more micro-batches per epoch →
                           longer wall clock. If None (no dataset built yet),
                           we plan against a typical 30-clip Voice Profile.
+        project_id:       If given, the disclosure includes project-specific
+                          paths (raw/, processed/, dataset/, checkpoints/,
+                          exports/). Otherwise only the shared paths.
 
     Returns:
         TrainingDecision (always non-None). Check `.can_train` to know if
@@ -207,6 +217,11 @@ def decide_preset(
     # The endpoint will pass the real count once the user has data.
     clips = train_clip_count if train_clip_count is not None else 30
 
+    # Build the disclosure once and pass it to every return path. Cheap —
+    # just path resolution, no I/O.
+    locations = _data_locations(project_id)
+    data_summary = _summarize_data_locations(locations)
+
     # ── Forced override (for tests / debugging only) ──────────────
     if force_preset is not None:
         plan = _build_plan(force_preset, train_clip_count=clips)
@@ -215,6 +230,8 @@ def decide_preset(
             plan=plan,
             friendly_summary=_summarize_plan(plan, detected),
             detected_hardware=detected,
+            data_locations=locations,
+            data_summary=data_summary,
         )
 
     # ── Disk gate (cheapest check, fails first) ───────────────────
@@ -232,6 +249,8 @@ def decide_preset(
                 "which doesn't need extra disk."
             ),
             detected_hardware=detected,
+            data_locations=locations,
+            data_summary=data_summary,
         )
 
     # ── No GPU ────────────────────────────────────────────────────
@@ -249,6 +268,8 @@ def decide_preset(
                 "produces good results in seconds."
             ),
             detected_hardware=detected,
+            data_locations=locations,
+            data_summary=data_summary,
         )
 
     # ── GPU too small ─────────────────────────────────────────────
@@ -266,6 +287,8 @@ def decide_preset(
                 "Quick Clone doesn't need much memory and works great here."
             ),
             detected_hardware=detected,
+            data_locations=locations,
+            data_summary=data_summary,
         )
 
     # ── Pick the preset ───────────────────────────────────────────
@@ -280,6 +303,8 @@ def decide_preset(
         plan=plan,
         friendly_summary=_summarize_plan(plan, detected),
         detected_hardware=detected,
+        data_locations=locations,
+        data_summary=data_summary,
     )
 
 
@@ -491,6 +516,104 @@ def _energy_phrase(power_watts: int, minutes: int) -> str:
         analogy = "running an air conditioner all day"
 
     return f"Total energy use: {amount} — about as much as {analogy}."
+
+
+def _data_locations(project_id: Optional[str] = None) -> dict:
+    """
+    What training will save and where, as structured data.
+
+    Paths come from settings.py so they stay correct on every OS without
+    hardcoding. Sizes are friendly approximations — fine for the disclosure
+    modal, not for accounting.
+    """
+    from backend.core.settings import DATA_DIR
+
+    items: list[dict] = []
+
+    if project_id is not None:
+        project_dir = DATA_DIR / "projects" / project_id
+        items.extend([
+            {
+                "path": str(project_dir / "raw"),
+                "purpose": "Your original recordings",
+                "size_label": "~2 MB per clip",
+                "shared": False,
+                "kept_after_training": True,
+            },
+            {
+                "path": str(project_dir / "processed"),
+                "purpose": "Cleaned-up clips used for training",
+                "size_label": "~1.5 MB per clip",
+                "shared": False,
+                "kept_after_training": True,
+            },
+            {
+                "path": str(project_dir / "dataset"),
+                "purpose": "Training dataset (transcripts + audio copies)",
+                "size_label": "~30 MB for 30 clips",
+                "shared": False,
+                "kept_after_training": True,
+            },
+            {
+                "path": str(project_dir / "checkpoints"),
+                "purpose": "Your trained voice profile",
+                "size_label": "up to ~4 GB during training, ~2 GB after",
+                "shared": False,
+                "kept_after_training": True,
+            },
+            {
+                "path": str(project_dir / "exports"),
+                "purpose": "Speech you generate from this voice",
+                "size_label": "a few KB per generation",
+                "shared": False,
+                "kept_after_training": True,
+            },
+        ])
+
+    items.extend([
+        {
+            "path": str(DATA_DIR / "models"),
+            "purpose": "Voice engine and transcriber (shared across projects)",
+            "size_label": "~2–3.5 GB total",
+            "shared": True,
+            "kept_after_training": True,
+        },
+        {
+            "path": str(DATA_DIR / "logs"),
+            "purpose": "Activity logs",
+            "size_label": "small",
+            "shared": True,
+            "kept_after_training": True,
+        },
+        {
+            "path": str(DATA_DIR / "temp"),
+            "purpose": "Temporary files during import (auto-cleaned)",
+            "size_label": "varies",
+            "shared": True,
+            "kept_after_training": False,
+        },
+    ])
+
+    return {
+        "data_dir": str(DATA_DIR),
+        "items": items,
+    }
+
+
+def _summarize_data_locations(locations: dict) -> str:
+    """Friendly markdown summary for the disclosure modal."""
+    return (
+        f"Your voice profile and recordings stay on this computer at "
+        f"`{locations['data_dir']}` — roughly **2.5 GB** for the voice "
+        f"engine plus your project data. You can delete it any time.\n\n"
+        f"Breakdown:\n"
+        f"- about **30 MB** for your recordings and the training dataset\n"
+        f"- up to **2 GB** for the trained voice profile (the best "
+        f"snapshot is kept, older ones pruned)\n"
+        f"- about **2 GB** for the voice engine, shared across all "
+        f"your projects\n\n"
+        f"No data leaves your computer."
+    )
 
 
 def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:

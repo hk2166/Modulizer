@@ -449,13 +449,18 @@ def get_training_plan(project_id: str):
         if processed.exists():
             train_clip_count = len(list(processed.glob("*.wav"))) or None
 
-    decision = decide_preset(train_clip_count=train_clip_count)
+    decision = decide_preset(
+        train_clip_count=train_clip_count,
+        project_id=project_id,
+    )
     return {
         "can_train": decision.can_train,
         "summary": decision.friendly_summary,
         "refusal_reason": decision.refusal_reason,
         "suggested_action": decision.suggested_action,
         "detected_hardware": decision.detected_hardware,
+        "data_locations": decision.data_locations,
+        "data_summary": decision.data_summary,
         # The plan dict is verbose. UI shouldn't show it; it's there for
         # debug + so the trainer can call this same endpoint server-side
         # when it kicks off.

@@ -51,3 +51,4 @@ htmlcov/
 !data/projects/*/raw/*.wav
 
 TASKS.md
+DEBUG.md
