@@ -45,6 +45,15 @@ from frontend import client
 # Hardware check copy
 # ══════════════════════════════════════════════════════════════════
 
+# Friendly label → BCP-47 language code. Order here drives the radio
+# button order; first entry is the default.
+_LANG_LABEL_TO_CODE = {
+    "English": "en",
+    "Hindi (हिन्दी)": "hi",
+}
+LANGUAGE_CHOICES = list(_LANG_LABEL_TO_CODE.keys())
+
+
 def _hardware_summary() -> tuple[str, str]:
     """
     Returns (status_markdown, fine_tuning_notice).
@@ -230,12 +239,22 @@ def on_preprocess(project_id: str | None):
     yield "⚠️ Preprocessing is taking longer than expected. Try again."
 
 
-def on_synthesize(text: str, project_id: str | None, clip_id: str | None):
+def on_synthesize(
+    text: str,
+    project_id: str | None,
+    clip_id: str | None,
+    language: str | None,
+):
     """
     Generate speech and return a path the audio component can play.
 
     We require both project_id and clip_id (the latter implies a recording
     has uploaded, validated, and preprocessed successfully).
+
+    `language` is the user's pick from the radio above the text box —
+    drives both XTTS synthesis and (downstream) which Whisper model is
+    loaded for clip QA. Maps the friendly label back to the BCP-47 code
+    the backend expects.
     """
     text = (text or "").strip()
     if not text:
@@ -245,8 +264,10 @@ def on_synthesize(text: str, project_id: str | None, clip_id: str | None):
     if not clip_id:
         return None, "Record a voice sample on the Record tab first."
 
+    lang_code = _LANG_LABEL_TO_CODE.get(language or "English", "en")
+
     try:
-        result = client.synthesize(project_id, text)
+        result = client.synthesize(project_id, text, language=lang_code)
     except client.BackendError as e:
         return None, f"⚠️ {e}"
 
@@ -441,6 +462,14 @@ def build_app() -> gr.Blocks:
                     "Type any text and hit **Generate**. "
                     "The first generation downloads the voice engine — give it a minute."
                 )
+                language_in = gr.Radio(
+                    choices=LANGUAGE_CHOICES,
+                    value=LANGUAGE_CHOICES[0],
+                    label="Language",
+                    info="Pick the language you're typing in. Hindi uses a "
+                         "more accurate transcriber when checking your "
+                         "training clips.",
+                )
                 text_in = gr.Textbox(
                     label="Text",
                     placeholder="Type something for me to say...",
@@ -496,7 +525,7 @@ def build_app() -> gr.Blocks:
         # Generate
         gen_btn.click(
             fn=on_synthesize,
-            inputs=[text_in, project_id, last_clip_id],
+            inputs=[text_in, project_id, last_clip_id, language_in],
             outputs=[audio_out, synth_status],
         )
 

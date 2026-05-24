@@ -123,7 +123,7 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
   - [x] Free disk < 5 GB → refuse with disk-cleanup suggestion
 - [ ] **Pre-training disclosure modal** showing:
   - [x] Estimated time based on hardware (e.g. "About 3 hours on your GTX 1650")
-  - [ ] Estimated power use ("Your GPU will run at full load")
+  - [x] Estimated power use ("Your GPU will run at full load")
   - [ ] What gets saved and where
   - [ ] "I understand, start training" button
 - [ ] Background-safe: user can close Tauri window, training continues, status restored on relaunch

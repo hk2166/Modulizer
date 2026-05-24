@@ -5,7 +5,6 @@ from TTS.api import TTS
 from backend.core.logger import logger
 from backend.core.settings import TTS_MODEL_NAME
 from backend.core.settings import runtime_config
-
 tts_model = None
 
 
@@ -35,22 +34,24 @@ def get_available_languages(tts: TTS) -> list[str]:
 
 
 def load_model() -> TTS:
-    """Load the TTS model singleton, respecting low-VRAM config."""
+    """
+    Load the TTS model singleton.
+
+    A note on low-VRAM mode: we used to call `.half()` here on the
+    assumption that fp16 weights would help on small GPUs. It doesn't —
+    XTTS's audio pipeline (speaker encoder, dvae, HiFi-GAN decoder) feeds
+    fp32 tensors into the model, and a fp16-weight / fp32-input mismatch
+    raises at the first matmul. Inference fits in ~2 GB of VRAM on stock
+    fp32, well inside a GTX 1650's 4 GB. We let the training pipeline
+    handle mixed precision (see training_config.py) where it actually
+    matters.
+    """
     global tts_model
 
     if tts_model is None:
         device = "cuda" if runtime_config.cuda_available else "cpu"
-
-        if runtime_config.low_vram_mode:
-            logger.info(f"Low VRAM mode enabled — loading model in fp16 on {device}")
-            tts_model = TTS(model_name=TTS_MODEL_NAME, gpu=runtime_config.cuda_available)
-            # Force half precision to reduce VRAM usage
-            if hasattr(tts_model.synthesizer, "tts_model"):
-                tts_model.synthesizer.tts_model.half()
-        else:
-            logger.info(f"Loading TTS model on device: {device}")
-            tts_model = TTS(model_name=TTS_MODEL_NAME).to(device)
-
+        logger.info(f"Loading TTS model on device: {device}")
+        tts_model = TTS(model_name=TTS_MODEL_NAME).to(device)
         logger.info("TTS model loaded successfully")
 
     return tts_model

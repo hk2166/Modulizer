@@ -54,43 +54,64 @@ from backend.core.settings import MODELS_DIR, runtime_config
 
 
 # ── Configuration ─────────────────────────────────────────────────
-WHISPER_MODEL_SIZE = "base"         # tiny | base | small | medium
-MIN_MATCH_SCORE = 0.6               # Below this = user read wrong prompt
+# Whisper model size by language. Hindi (and most non-English languages)
+# need at least 'medium' — 'base' has very high WER on Devanagari text,
+# producing garbled transcripts that poison the dataset csv when used for
+# fine-tuning. English clip QA is fine on 'base'.
+#
+# Sizes ship as separate weights; we lazy-load each on first use so the
+# user only pays the disk cost (medium ~1.5 GB) when they actually pick
+# a non-English language.
+WHISPER_SIZE_BY_LANG = {
+    "en": "base",
+    "hi": "medium",
+}
+WHISPER_DEFAULT_SIZE = "base"      # for languages we haven't tuned yet
+MIN_MATCH_SCORE = 0.6              # Below this = user read wrong prompt
 WHISPER_DOWNLOAD_DIR = str(MODELS_DIR / "whisper")
 
 
-# ── Model singleton ───────────────────────────────────────────────
-# Same pattern as inference_service.py — load once, reuse.
-_whisper_model: WhisperModel | None = None
+# ── Model singletons (one per size) ───────────────────────────────
+# Keyed by Whisper size, not language — both 'en' and any other 'base'
+# language share a single loaded model. Saves memory in the common case.
+_whisper_models: dict[str, WhisperModel] = {}
 
 
-def get_whisper_model() -> WhisperModel:
+def _whisper_size_for_language(language: str) -> str:
+    """Pick the right Whisper model size for the given language."""
+    return WHISPER_SIZE_BY_LANG.get(language, WHISPER_DEFAULT_SIZE)
+
+
+def get_whisper_model(language: str = "en") -> WhisperModel:
     """
-    Load the Whisper model singleton.
+    Load (or reuse) the Whisper model appropriate for `language`.
 
-    Uses CPU with int8 quantization — fast and low memory.
-    int8 = weights stored as 8-bit integers instead of 32-bit floats.
-    Roughly 4× smaller model, ~2× faster inference, tiny accuracy loss.
+    Different languages map to different model sizes via WHISPER_SIZE_BY_LANG.
+    The first call for a given size pays the load cost; subsequent calls
+    return the cached instance.
     """
-    global _whisper_model
+    size = _whisper_size_for_language(language)
 
-    if _whisper_model is None:
-        device = "cuda" if runtime_config.cuda_available else "cpu"
-        # int8 on CPU, float16 on GPU (both are faster than float32)
-        compute_type = "float16" if runtime_config.cuda_available else "int8"
+    if size in _whisper_models:
+        return _whisper_models[size]
 
-        logger.info(
-            f"Loading Whisper {WHISPER_MODEL_SIZE} on {device} ({compute_type})"
-        )
-        _whisper_model = WhisperModel(
-            WHISPER_MODEL_SIZE,
-            device=device,
-            compute_type=compute_type,
-            download_root=WHISPER_DOWNLOAD_DIR,
-        )
-        logger.info("Whisper model loaded")
+    device = "cuda" if runtime_config.cuda_available else "cpu"
+    # int8 on CPU, float16 on GPU (both faster than float32)
+    compute_type = "float16" if runtime_config.cuda_available else "int8"
 
-    return _whisper_model
+    logger.info(
+        f"Loading Whisper {size} on {device} ({compute_type}) "
+        f"for language={language}"
+    )
+    model = WhisperModel(
+        size,
+        device=device,
+        compute_type=compute_type,
+        download_root=WHISPER_DOWNLOAD_DIR,
+    )
+    logger.info(f"Whisper {size} loaded")
+    _whisper_models[size] = model
+    return model
 
 
 @dataclass
@@ -121,7 +142,7 @@ def transcribe_clip(
         TranscriptionResult with transcription, score, and feedback.
     """
     audio_path = Path(audio_path)
-    model = get_whisper_model()
+    model = get_whisper_model(language)
 
     # ── Transcribe ────────────────────────────────────────────────
     # model.transcribe() returns (segments_iterator, info)
