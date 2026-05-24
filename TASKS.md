@@ -142,8 +142,8 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
   - [ ] Replace `importer.py` blind 10s slicing with VAD-based cuts (silero-vad). Current slicer can split words mid-syllable, which corrupts the (audio, text) alignment Whisper produces.
   - [ ] Make `dataset_builder.py` pick a "golden reference" clip (5–7s, near-median pitch + RMS) and store its id in `manifest.json`; teach `project_service.get_reference_clip` to prefer that over `sorted(...)[0]`.
   - [ ] Audit `preprocessor._spectral_denoise` — the path is off by default but spectral subtraction strips formants when used; consider replacing with a no-op or a learned model, not a hand-rolled gate.
-- [ ] Cooperative cancellation — training checks a flag every N batches
-- [ ] Checkpoint saving to `data/projects/{id}/checkpoints/`
+- [x] Cooperative cancellation — training checks a flag every N batches
+- [x] Checkpoint saving to `data/projects/{id}/checkpoints/`
 - [ ] Early-stopping / best-checkpoint selection
 - [ ] Validation sample synthesis after each round (for UI preview)
 - [ ] Crash-safe checkpointing — resume from last good state
