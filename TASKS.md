@@ -122,7 +122,7 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
   - [x] No GPU → refuse with: "Voice Profile training needs a graphics card. You can use Quick Clone instead — it works without one."
   - [x] Free disk < 5 GB → refuse with disk-cleanup suggestion
 - [ ] **Pre-training disclosure modal** showing:
-  - [ ] Estimated time based on hardware (e.g. "About 3 hours on your GTX 1650")
+  - [x] Estimated time based on hardware (e.g. "About 3 hours on your GTX 1650")
   - [ ] Estimated power use ("Your GPU will run at full load")
   - [ ] What gets saved and where
   - [ ] "I understand, start training" button

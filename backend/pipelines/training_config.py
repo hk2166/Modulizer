@@ -494,12 +494,7 @@ def _energy_phrase(power_watts: int, minutes: int) -> str:
 
 
 def _summarize_plan(plan: TrainingPlan, detected: dict) -> str:
-    """
-    Produce a friendly human summary the UI can show on the disclosure modal.
-
-    Avoid jargon. No "fp16", no "batch size", no "epochs". This is the copy
-    the user reads to decide whether to start the training.
-    """
+    """Friendly human summary for the disclosure modal. No jargon."""
     gpu_name = detected.get("gpu_name") or "your GPU"
     vram = detected.get("vram_gb", 0.0)
     minutes = plan.estimated_minutes
