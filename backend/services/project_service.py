@@ -56,15 +56,45 @@ def get_project(project_id:str) -> dict:
 
 def get_reference_clip(project_id: str) -> str | None:
     """
-    Return the path to the first available processed clip for this project.
-    Returns None if no processed clips exist yet.
+    Return the path to the project's preferred synthesis reference clip.
+
+    Priority:
+      1. The golden clip recorded in dataset/manifest.json — picked by
+         select_golden_reference based on duration fit + pitch stability,
+         filtered to clips that survived dataset validation.
+      2. Lexicographic fallback to processed/ — used by the Quick Clone
+         path, before any dataset has been built.
+      3. None when there's nothing usable.
+
+    Always returns a path that exists on disk; a stale id in the manifest
+    falls through to the lexicographic fallback rather than returning a
+    path the caller will then fail to open.
     """
-    processed_dir = DATA_DIR / "projects" / project_id / "processed"
+    project_dir = DATA_DIR / "projects" / project_id
+    processed_dir = project_dir / "processed"
+
     if not processed_dir.exists():
         return None
 
+    # 1. Manifest's golden clip wins when present and on disk.
+    manifest_path = project_dir / "dataset" / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            golden_id = manifest.get("golden_clip_id")
+            if golden_id:
+                candidate = processed_dir / f"{golden_id}.wav"
+                if candidate.exists():
+                    return str(candidate.resolve())
+                logger.warning(
+                    f"get_reference_clip: manifest's golden_clip_id "
+                    f"{golden_id!r} no longer on disk — falling back."
+                )
+        except (ValueError, OSError) as e:
+            logger.warning(f"get_reference_clip: bad manifest ({e}) — falling back.")
+
+    # 2. Lexicographic fallback (Quick Clone path).
     clips = sorted(processed_dir.glob("*.wav"))
     if not clips:
         return None
-
     return str(clips[0].resolve())

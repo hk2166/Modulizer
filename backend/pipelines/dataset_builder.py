@@ -250,6 +250,23 @@ def build_dataset(
         _write_ljspeech_metadata(eval_csv, eval_entries)
 
     # ── Manifest (our own bookkeeping) ────────────────────────────
+    # Pick a "golden reference" — the clip we'll prefer for synthesis when
+    # the user doesn't pick one explicitly. Score the *processed* clips
+    # (not the dataset/wavs/ copies) because:
+    #   1. Processed is what inference_service actually consumes.
+    #   2. YIN pitch scoring is sensitive to resampling filters; processed
+    #      clips are at native sample rate while dataset/ may have been
+    #      resampled for Coqui's loader.
+    #
+    # Important: only score clips that survived all validation filters,
+    # i.e. ones that actually made it into train_entries / eval_entries.
+    # Without the whitelist the picker could otherwise crown a
+    # too-quiet/clipped/short clip that was deliberately excluded.
+    valid_stems = [e.clip_id for e in entries]
+    processed_dir = project_dir / "processed"
+    golden_path = select_golden_reference(processed_dir, allowed_stems=valid_stems)
+    golden_clip_id = Path(golden_path).stem if golden_path else None
+
     manifest_path = dataset_dir / "manifest.json"
     total_duration = sum(e.duration_s for e in entries)
     _write_manifest(
@@ -261,6 +278,7 @@ def build_dataset(
         eval_entries=eval_entries,
         total_duration_s=total_duration,
         skipped_reasons=skipped,
+        golden_clip_id=golden_clip_id,
     )
 
     logger.info(
@@ -420,10 +438,16 @@ def _write_manifest(
     eval_entries: list[ClipEntry],
     total_duration_s: float,
     skipped_reasons: dict[str, int],
+    golden_clip_id: str | None = None,
 ) -> None:
     """
     Write our own manifest.json — not consumed by Coqui, but useful for
     the UI ("here's what's in this dataset") and for export/import later.
+
+    `golden_clip_id` is the project's preferred synthesis reference, picked
+    by select_golden_reference. Stored as the clip's UUID stem so
+    project_service.get_reference_clip can resolve it back to a path under
+    processed/.
     """
     manifest = {
         "project_id": project_id,
@@ -435,6 +459,7 @@ def _write_manifest(
         "eval_count": len(eval_entries),
         "total_duration_s": round(total_duration_s, 2),
         "skipped_reasons": skipped_reasons,
+        "golden_clip_id": golden_clip_id,
         "clips": [
             {
                 "clip_id": e.clip_id,
@@ -465,7 +490,10 @@ def _write_manifest(
 # ══════════════════════════════════════════════════════════════════
 
 
-def select_golden_reference(processed_dir: str | Path) -> str | None:
+def select_golden_reference(
+    processed_dir: str | Path,
+    allowed_stems: list[str] | None = None,
+) -> str | None:
     """
     Pick the best clip to use as a default voice-cloning reference.
 
@@ -493,6 +521,11 @@ def select_golden_reference(processed_dir: str | Path) -> str | None:
     Args:
         processed_dir: absolute or relative path to a directory of .wav
                        files (typically `data/projects/{id}/processed/`).
+        allowed_stems: when set, restricts scoring to clips whose stem
+                       (UUID without extension) appears in this list.
+                       Used by the dataset builder to keep the picker
+                       from accidentally choosing a clip that failed
+                       validation and was excluded from training.
 
     Returns:
         Absolute path to the highest-scoring clip, or None if the
@@ -508,8 +541,11 @@ def select_golden_reference(processed_dir: str | Path) -> str | None:
         return None
 
     wavs = sorted(processed.glob("*.wav"))
+    if allowed_stems is not None:
+        whitelist = set(allowed_stems)
+        wavs = [w for w in wavs if w.stem in whitelist]
     if not wavs:
-        logger.warning(f"select_golden_reference: no .wav files in {processed}")
+        logger.warning(f"select_golden_reference: no candidate .wav files in {processed}")
         return None
 
     best_path: Path | None = None
