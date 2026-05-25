@@ -1,0 +1,49 @@
+# VoiceForge — runtime dependencies
+#
+# Install via scripts/setup.sh (handles torch+torchaudio CPU vs CUDA index
+# selection based on whether nvidia-smi is present). If installing manually,
+# install torch first from the right wheel index, then this file.
+
+# ── API server ───────────────────────────────────────────────────────────
+fastapi==0.136.1
+uvicorn==0.46.0
+pydantic==2.13.4
+python-multipart==0.0.28
+
+# ── TTS / inference ──────────────────────────────────────────────────────
+TTS==0.22.0
+# Coqui's training framework (used by training.py for fine-tuning).
+# Ships separately from the TTS package on PyPI.
+trainer==0.0.36
+# torch + torchaudio MUST match. Install via scripts/setup.sh, or directly:
+#   CPU:        pip install torch==2.5.1+cpu torchaudio==2.5.1+cpu \
+#                   --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 12.1:  pip install torch==2.5.1+cu121 torchaudio==2.5.1+cu121 \
+#                   --index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
+torchaudio==2.5.1
+# transformers>=4.40 dropped BeamSearchScorer which XTTS v2 still needs.
+transformers==4.39.3
+
+# ── Audio processing ─────────────────────────────────────────────────────
+librosa==0.11.0
+soundfile==0.13.1
+numpy==1.26.4
+scipy==1.17.1
+# Bundled static ffmpeg binary used by importer.py for video/audio extraction.
+# Avoids requiring a system-wide ffmpeg install.
+imageio-ffmpeg==0.6.0
+
+# ── Speech-to-text ───────────────────────────────────────────────────────
+faster-whisper==1.2.1
+
+# ── Frontend (Gradio MVP) ────────────────────────────────────────────────
+gradio==6.14.0
+# HTTP client used by frontend/client.py to talk to the backend.
+requests==2.34.2
+
+# ── Database (planned for M1 persistence) ────────────────────────────────
+SQLAlchemy==2.0.49
+
+# ── System monitoring ────────────────────────────────────────────────────
+psutil==7.2.2

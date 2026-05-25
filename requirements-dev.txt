@@ -1,0 +1,9 @@
+# VoiceForge — dev / test dependencies. Install on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+pytest==8.3.4
+# httpx is FastAPI's TestClient backend — needed for /health, /system, /tts
+# smoke tests and any future API-level test work.
+httpx==0.28.1
+# Lightweight linter + formatter. Optional but the project conventions assume it.
+ruff==0.8.4

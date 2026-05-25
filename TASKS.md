@@ -138,10 +138,12 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
   - [x] CPU only → refuse with friendly message (no cloud fallback in v1)
 - [x] Training loop wrapper with progress callbacks → `JobManager.update_progress`
   - **Quality follow-ups discovered during this work:**
-  - [ ] Switch `preprocessor.TARGET_SAMPLE_RATE` from 24000 → 22050 to align with XTTS GPT/dvae native rate. Output stays 24 kHz via the HiFi-GAN decoder. Removes a per-step torchaudio resample.
-  - [ ] Replace `importer.py` blind 10s slicing with VAD-based cuts (silero-vad). Current slicer can split words mid-syllable, which corrupts the (audio, text) alignment Whisper produces.
+  - [x] Switch `preprocessor.TARGET_SAMPLE_RATE` from 24000 → 22050 to align with XTTS GPT/dvae native rate. Output stays 24 kHz via the HiFi-GAN decoder. Removes a per-step torchaudio resample.
   - [ ] Make `dataset_builder.py` pick a "golden reference" clip (5–7s, near-median pitch + RMS) and store its id in `manifest.json`; teach `project_service.get_reference_clip` to prefer that over `sorted(...)[0]`.
   - [ ] Audit `preprocessor._spectral_denoise` — the path is off by default but spectral subtraction strips formants when used; consider replacing with a no-op or a learned model, not a hand-rolled gate.
+  - **Hindi (and other Indic-language) pronunciation gap:** XTTS's `tokenizer.preprocess_text` falls through to `basic_cleaners` (lowercase + whitespace) for Hindi — the maintainer left a `# @manmay will implement this` TODO. Same fallback hits Bengali, Tamil, Telugu, Marathi, Gujarati, Punjabi, Urdu. Two ways to close the gap, pick one or do both:
+  - [ ] **App-layer pre-normalizer (preferred):** add a `backend/audio/text_cleaners.py` with a `hindi_cleaners(text)` that handles schwa-deletion, halant rules, number expansion, and Latin→Devanagari for inevitable English-leak words. Run it inside `inference_service.generate_speech` and `dataset_builder._sanitize_text` before either path hits the model. Libraries to evaluate: `indic-transliteration`, `aksharamukha`. Survives pip upgrades and stays under our control.
+  - [ ] **Venv monkey-patch (fallback):** at app startup, replace `TTS.tts.layers.xtts.tokenizer.VoiceBpeTokenizer.preprocess_text` with a wrapper that routes `lang="hi"` through our `hindi_cleaners` before the base call. Brittle (won't survive `pip install -U TTS`), but catches paths inside Coqui that bypass our service layer (training dataset loader, inference_stream, etc.). Only worth doing if option A leaves measurable gaps.
 - [x] Cooperative cancellation — training checks a flag every N batches
 - [x] Checkpoint saving to `data/projects/{id}/checkpoints/`
 - [ ] Early-stopping / best-checkpoint selection
@@ -220,7 +222,7 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 
 ### Hardware + Performance
 
-- [ ] Document tested configs (GTX 1650 4GB, M3 Pro CPU, CPU-only) in README with expected times for each path
+- [x] Document tested configs (GTX 1650 4GB, M3 Pro CPU, CPU-only) in README with expected times for each path
 - [x] Memory guard: refuse training if free VRAM < threshold, suggest Quick Clone instead
 
 ### Observability
