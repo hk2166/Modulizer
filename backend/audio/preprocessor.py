@@ -39,10 +39,11 @@ KEY CONCEPTS:
   than broadcast compliance.
 
 • Optional denoise:
-  A simple spectral subtraction approach — estimate the noise floor
-  from the first 0.5s (assumed to be silence/room tone), then subtract
-  that spectrum from the whole signal. Not perfect, but removes
-  steady-state noise like fan hum or AC.
+  Off by default. When enabled, runs DeepFilterNet 3 — a small neural
+  denoiser — on CPU. Handles non-stationary noise (clicks, rustles,
+  distant voices) and preserves formants better than spectral subtraction.
+  Adds ~200 ms per clip on a modern CPU. The model is lazy-loaded on
+  first use so the import cost only hits projects that actually denoise.
 """
 
 from dataclasses import dataclass
@@ -54,6 +55,15 @@ import librosa
 
 from backend.core.logger import logger
 from backend.core.settings import DATA_DIR
+
+
+# DeepFilterNet model singleton. CPU-only by deliberate choice:
+#   • Keeps the GPU 100% available for XTTS on low-VRAM cards.
+#   • Preprocessing is offline (one shot per clip), so latency doesn't matter.
+#   • Same code path works on machines without a GPU at all.
+# Lazy-initialised on first call to _get_dfn() so the torch + df imports
+# don't run unless someone actually denoises.
+_dfn_state = None  # tuple[model, df_state, sr] once loaded
 
 
 # ── Configuration ─────────────────────────────────────────────────
@@ -68,7 +78,6 @@ TARGET_SAMPLE_RATE = 22050          # XTTS GPT / DVAE native rate
 TARGET_PEAK_DBFS = -3.0             # Normalize peaks to -3 dBFS
 TRIM_TOP_DB = 30                    # Silence threshold for trimming (dB below peak)
                                     # Higher = more aggressive trimming
-DENOISE_NOISE_DURATION_S = 0.5      # Use first 0.5s to estimate noise floor
 
 
 @dataclass
@@ -107,9 +116,10 @@ def preprocess_clip(
         project_id:  Project this clip belongs to.
         clip_id:     Clip identifier (used as output filename).
         input_path:  Path to the raw .wav file.
-        denoise:     Whether to apply light spectral denoising.
-                     STRONGLY DISCOURAGED — see _spectral_denoise docstring.
-                     Reject noisy clips at the validator instead.
+        denoise:     Run a CPU-side neural denoiser (DeepFilterNet 3) before
+                normalization. Off by default; turn on for clips with
+                persistent background noise (HVAC, fan, distant traffic).
+                Adds ~200 ms per clip on a modern CPU.
 
     Returns:
         PreprocessResult with output path and metadata.
@@ -161,10 +171,10 @@ def preprocess_clip(
         f"Trimmed silence: kept [{trimmed_start_s:.2f}s – {trimmed_end_s:.2f}s]"
     )
 
-    # ── Step 4: Optional denoise ──────────────────────────────────
+    # ── Step 4: Optional neural denoise (DeepFilterNet 3, CPU) ────
     if denoise:
-        samples = _spectral_denoise(samples, TARGET_SAMPLE_RATE)
-        logger.info("Applied spectral denoising")
+        samples = _dfn_denoise(samples, TARGET_SAMPLE_RATE)
+        logger.info("Applied neural denoising (DFN3)")
 
     # ── Step 5: Peak normalize ────────────────────────────────────
     samples = _peak_normalize(samples, TARGET_PEAK_DBFS)
@@ -253,69 +263,76 @@ def _peak_normalize(samples: np.ndarray, target_dbfs: float) -> np.ndarray:
     return samples * scale_factor
 
 
-def _spectral_denoise(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+def _get_dfn():
     """
-    Light spectral subtraction denoising.
+    Lazy-load DFN3 once per process on CPU.
 
-    ⚠️ DISCOURAGED — kept for completeness but off by default.
-
-    Spectral subtraction is a brutal high-frequency gate. It tends to
-    strip the very formants and breath cues that make a voice sound
-    human, leaving the audio sounding hollow / "underwater" — which is
-    *worse* than the original noise for cloning purposes. XTTS clones
-    background noise more gracefully than it clones missing formants.
-
-    The right answer is the Stage-2 validator: if SNR is too low, reject
-    the clip and prompt the user for a cleaner take. We do not save bad
-    clips by destroying their high frequencies.
-
-    HOW IT WORKS (when forced on):
-      1. Take the first DENOISE_NOISE_DURATION_S seconds as a "noise sample"
-         (assumes the recording starts with a moment of silence/room tone).
-      2. Compute the average power spectrum of that noise sample using STFT.
-         STFT = Short-Time Fourier Transform: breaks audio into overlapping
-         frames and computes frequency content of each frame.
-      3. Subtract the noise spectrum from every frame of the full signal.
-         Frequencies dominated by noise get attenuated.
-      4. Reconstruct audio from the modified spectrum using inverse STFT.
-
-    LIMITATIONS:
-      - Only removes steady-state noise (fan hum, AC, white noise).
-      - Won't help with intermittent noise (coughs, keyboard clicks).
-      - Can introduce "musical noise" artifacts if noise estimate is wrong.
-      - Strips formants → hollow / robotic timbre after cloning.
+    Imports torch and the `df` package on first call. Subsequent calls
+    return the cached (model, df_state, sr) tuple. Module top-level
+    imports stay light so projects that never denoise don't pay the
+    torch + DFN import cost (~3 s on cold start).
     """
-    noise_samples = int(DENOISE_NOISE_DURATION_S * sample_rate)
+    global _dfn_state
+    if _dfn_state is not None:
+        return _dfn_state
 
-    if len(samples) <= noise_samples:
-        # Clip too short to estimate noise — skip
+    import torch
+    from df import init_df
+
+    logger.info("Loading DeepFilterNet (CPU)")
+    model, df_state, _ = init_df()
+    model.eval()
+    model.to(torch.device("cpu"))
+    sr = df_state.sr()
+    _dfn_state = (model, df_state, sr)
+    logger.info(f"DeepFilterNet ready (model SR = {sr} Hz)")
+    return _dfn_state
+
+
+def _dfn_denoise(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+    """
+    Neural denoising via DeepFilterNet 3.
+
+    Better than the old spectral subtraction at the things that matter
+    for voice cloning: handles non-stationary noise (clicks, rustles,
+    distant voices) and preserves formants. Replaced the old hand-rolled
+    `_spectral_denoise` which stripped formants and made clones sound
+    hollow.
+
+    Runs on CPU only (~50 MB RAM, ~200 ms per 6 s clip on a modern CPU)
+    so it doesn't compete with XTTS for VRAM on low-VRAM cards.
+
+    Args:
+        samples:     float32 mono audio in [-1, 1].
+        sample_rate: rate of `samples`. DFN expects 48 kHz internally;
+                     we resample if needed and resample back at the end
+                     so the rest of the pipeline doesn't need to change.
+
+    Returns:
+        Denoised float32 audio at the **input** sample rate.
+    """
+    import torch
+    from df.enhance import enhance
+
+    if len(samples) == 0:
         return samples
 
-    # STFT parameters
-    n_fft = 2048        # FFT window size (frequency resolution)
-    hop_length = 512    # Step between frames (time resolution)
+    model, df_state, dfn_sr = _get_dfn()
 
-    # Compute STFT of full signal → complex matrix (freq_bins × time_frames)
-    stft = librosa.stft(samples, n_fft=n_fft, hop_length=hop_length)
+    # DFN expects 48 kHz. Up-resample if needed; we'll bring it back at the end.
+    if sample_rate != dfn_sr:
+        upsampled = librosa.resample(samples, orig_sr=sample_rate, target_sr=dfn_sr)
+    else:
+        upsampled = samples
 
-    # Estimate noise from first N samples
-    noise_stft = librosa.stft(
-        samples[:noise_samples], n_fft=n_fft, hop_length=hop_length
-    )
-    # Mean power spectrum of noise (average across time frames)
-    noise_power = np.mean(np.abs(noise_stft) ** 2, axis=1, keepdims=True)
+    # DFN's enhance() takes a torch tensor with shape (channels, samples).
+    audio_t = torch.from_numpy(upsampled).unsqueeze(0)
+    with torch.no_grad():
+        enhanced_t = enhance(model, df_state, audio_t)
+    enhanced = enhanced_t.squeeze(0).cpu().numpy().astype(np.float32)
 
-    # Spectral subtraction: reduce magnitude where noise dominates
-    # We subtract noise power from signal power, floor at 0
-    signal_power = np.abs(stft) ** 2
-    clean_power = np.maximum(signal_power - noise_power, 0)
+    # Resample back so downstream code (peak normalize, write) sees the same SR.
+    if sample_rate != dfn_sr:
+        enhanced = librosa.resample(enhanced, orig_sr=dfn_sr, target_sr=sample_rate)
 
-    # Reconstruct magnitude, keep original phase
-    clean_magnitude = np.sqrt(clean_power)
-    phase = np.angle(stft)
-    clean_stft = clean_magnitude * np.exp(1j * phase)
-
-    # Inverse STFT → back to time domain
-    clean_samples = librosa.istft(clean_stft, hop_length=hop_length, length=len(samples))
-
-    return clean_samples.astype(np.float32)
+    return enhanced

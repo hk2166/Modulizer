@@ -27,6 +27,7 @@ ffmpeg-python==0.2.0
 # from uploaded videos and re-encode arbitrary audio formats. Avoids
 # requiring users to install ffmpeg system-wide.
 imageio-ffmpeg==0.6.0
+deepfilternet==0.5.6
 
 # ── Speech-to-text (planned) ──────────────────────────────────
 faster-whisper==1.2.1
