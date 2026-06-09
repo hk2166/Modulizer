@@ -90,6 +90,21 @@ def generate_speech(
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # App-layer text normalization before XTTS tokenization.
+        # Handles what the tokenizer doesn't: Indic number expansion,
+        # Latin-word transliteration for Hindi/Indic text, NFC normalization.
+        # Returns None for English and unsupported languages (no-op).
+        from backend.audio.text_cleaners import get_cleaners
+        cleaner = get_cleaners(language)
+        if cleaner:
+            original = text
+            text = cleaner(text)
+            if text != original:
+                logger.info(
+                    f"Text normalized for lang={language}: "
+                    f"{original!r} → {text!r}"
+                )
+
         if speaker_wav:
             # Primary path — voice cloning
             ref = Path(speaker_wav)

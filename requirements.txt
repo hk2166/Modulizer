@@ -43,6 +43,11 @@ faster-whisper==1.2.1
 # never use it don't pay the load time.
 deepfilternet==0.5.6
 
+# ── Indic-language text normalization ─────────────────────────────────────
+# Used by backend/audio/text_cleaners.py — lazy-imported only when the
+# cleaner encounters Latin characters inside Indic-script text.
+indic-transliteration==2.3.82
+
 # ── Frontend (Gradio MVP) ────────────────────────────────────────────────
 gradio==6.14.0
 # HTTP client used by frontend/client.py to talk to the backend.

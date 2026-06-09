@@ -207,7 +207,7 @@ def build_dataset(
             skipped["no_transcript"] = skipped.get("no_transcript", 0) + 1
             continue
 
-        sanitized = _sanitize_text(text)
+        sanitized = _sanitize_text(text, language=language)
         if len(sanitized.split()) < MIN_TRANSCRIPT_WORDS:
             skipped["short_transcript"] = skipped.get("short_transcript", 0) + 1
             continue
@@ -352,14 +352,18 @@ _BAD_CHARS_RE = re.compile(r"[|\r\n\t]+")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def _sanitize_text(text: str) -> str:
+def _sanitize_text(text: str, language: str = "en") -> str:
     """
-    Make text safe for LJSpeech metadata.
+    Make text safe for LJSpeech metadata and normalized for the target language.
 
-    - Replace pipe / newline / tab with a space (avoids file corruption).
-    - Collapse runs of whitespace to single spaces.
-    - Strip leading/trailing whitespace.
+    Runs the app-layer language cleaner first (number expansion, Latin
+    transliteration for Indic languages) so training text matches synthesis.
     """
+    from backend.audio.text_cleaners import get_cleaners
+    cleaner = get_cleaners(language)
+    if cleaner:
+        text = cleaner(text)
+
     text = _BAD_CHARS_RE.sub(" ", text)
     text = _WHITESPACE_RE.sub(" ", text)
     return text.strip()
