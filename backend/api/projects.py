@@ -1,3 +1,5 @@
+import threading
+
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, File, UploadFile, BackgroundTasks
@@ -19,12 +21,27 @@ from backend.services.inference_service import generate_speech
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+# Registry: job_id → threading.Event, for cooperative cancellation of training jobs.
+# Kept at module level so the cancel endpoint in api/jobs.py can reach it via
+# `from backend.api.projects import _cancel_training_job`.
+_cancel_events: dict[str, threading.Event] = {}
+
+
+def _cancel_training_job(job_id: str) -> None:
+    """Flip the cancel event for a training job, if one is registered."""
+    event = _cancel_events.get(job_id)
+    if event is not None:
+        event.set()
+
 class CreateProjectRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
 
 class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
     language: str = "en"
+    # When True, use the fine-tuned Voice Profile checkpoint instead of a
+    # reference clip. Requires a completed training job for this project.
+    profile: bool = False
     # Synthesis-targeted cleaning is OFF by default. Counter-intuitively,
     # XTTS v2's speaker encoder clones better from a natural processed clip
     # than from one that's been high-pass-filtered, denoised, and RMS-normalized.
@@ -143,20 +160,76 @@ def _run_preprocess(project_id: str, clips: list, job_id: str):
 @router.post('/{project_id}/synthesize')
 def synthesize(project_id: str, req: SynthesizeRequest):
     """
-    Generate speech for the given text using the project's reference clip.
+    Generate speech for the given text using the project's voice.
 
-    Pipeline (all behind the scenes):
-      1. Find a processed reference clip (sorted, first available).
-      2. Run it through the synthesis cleaner (cached) — DC offset,
-         high-pass, denoise, RMS normalize, soft limit. This produces
-         a tighter signal that XTTS clones from more reliably.
-      3. Hand the cleaned reference to XTTS for inference.
-      4. Save the result in the project's exports/ folder.
+    Two modes controlled by `profile`:
+      - profile=False (default): Quick Clone — use a reference clip for
+        zero-shot voice cloning. Works immediately after recording.
+      - profile=True: Voice Profile — use the fine-tuned checkpoint for
+        higher-quality synthesis. Requires a completed training run.
     """
     project = get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
 
+    output_path = str(DATA_DIR / "projects" / project_id / "exports" / f"{uuid4()}.wav")
+
+    if req.profile:
+        # ── Voice Profile path: synthesize from fine-tuned checkpoint ──
+        from backend.services.inference_service import generate_speech_from_checkpoint
+        from backend.pipelines.training import _find_checkpoints
+
+        checkpoints_dir = DATA_DIR / "projects" / project_id / "checkpoints"
+        best, last = _find_checkpoints(checkpoints_dir)
+        checkpoint = best or last
+
+        if checkpoint is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No trained voice profile found. "
+                    "Train a Voice Profile first, then try again."
+                ),
+            )
+
+        # The config.json lives in the same run directory as the checkpoint.
+        config_path = checkpoint.parent / "config.json"
+        if not config_path.exists():
+            raise HTTPException(
+                status_code=422,
+                detail="Voice profile is incomplete — config.json is missing.",
+            )
+
+        # We still need a reference clip for speaker conditioning even with
+        # the fine-tuned model. The profile captures the voice's style;
+        # the reference clip anchors the speaker identity.
+        reference = get_reference_clip(project_id)
+        if reference is None:
+            raise HTTPException(
+                status_code=422,
+                detail="No processed clips found. Upload and preprocess a recording first.",
+            )
+
+        try:
+            result_path = generate_speech_from_checkpoint(
+                text=req.text,
+                output_path=output_path,
+                checkpoint_path=str(checkpoint),
+                config_path=str(config_path),
+                speaker_wav=reference,
+                language=req.language,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        return {
+            "output": result_path,
+            "mode": "profile",
+            "checkpoint": str(checkpoint),
+            "language": req.language,
+        }
+
+    # ── Quick Clone path: reference-clip voice cloning ──────────────
     reference = get_reference_clip(project_id)
     if reference is None:
         raise HTTPException(
@@ -164,8 +237,6 @@ def synthesize(project_id: str, req: SynthesizeRequest):
             detail="No processed clips found. Upload and preprocess a recording first.",
         )
 
-    # Optional cleaner pass — see comment on SynthesizeRequest.clean_reference.
-    # Default is to use the processed clip as-is, which XTTS clones from best.
     if req.clean_reference:
         try:
             reference_for_synth = get_or_clean_reference(project_id, reference)
@@ -173,8 +244,6 @@ def synthesize(project_id: str, req: SynthesizeRequest):
             raise HTTPException(status_code=500, detail=str(e))
     else:
         reference_for_synth = reference
-
-    output_path = str(DATA_DIR / "projects" / project_id / "exports" / f"{uuid4()}.wav")
 
     try:
         result_path = generate_speech(
@@ -188,6 +257,7 @@ def synthesize(project_id: str, req: SynthesizeRequest):
 
     return {
         "output": result_path,
+        "mode": "quick_clone",
         "reference_clip": reference_for_synth,
         "language": req.language,
         "cleaned_reference": req.clean_reference,
@@ -403,6 +473,109 @@ def _run_dataset_build(
     except Exception as e:
         job_manager.fail_job(job_id, error=str(e))
 
+
+
+# ── Training (M2) ─────────────────────────────────────────────────
+
+class StartTrainingRequest(BaseModel):
+    language: str = "en"
+
+
+@router.post("/{project_id}/train", status_code=202)
+def start_training(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    req: StartTrainingRequest = StartTrainingRequest(),
+):
+    """
+    Start a Voice Profile fine-tuning job for this project.
+
+    Prerequisites (checked before scheduling):
+      - Project exists.
+      - A dataset has been built (dataset/metadata.csv present).
+      - Hardware passes the training gate (decided by training_config.decide_preset).
+
+    Returns a job_id. Poll GET /jobs/{id} for progress, ETA, validation
+    sample paths, and the final result. POST /jobs/{id}/cancel to stop.
+    """
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
+
+    # Quick prerequisite check before spinning up a job.
+    from pathlib import Path as _Path
+    metadata_csv = _Path(DATA_DIR) / "projects" / project_id / "dataset" / "metadata.csv"
+    if not metadata_csv.exists():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No training dataset found for this project. "
+                "Build the dataset first via POST /projects/{id}/dataset."
+            ),
+        )
+
+    # Hardware gate — refuse CPU-only early so the user doesn't wait for
+    # a job that will immediately fail inside run_training.
+    from backend.pipelines.training_config import decide_preset
+    decision = decide_preset(project_id=project_id)
+    if not decision.can_train:
+        raise HTTPException(
+            status_code=422,
+            detail=decision.refusal_reason or "This machine can't run Voice Profile training.",
+        )
+
+    job = job_manager.create_job("training")
+    cancel_event = threading.Event()
+    _cancel_events[job.id] = cancel_event
+
+    background_tasks.add_task(
+        _run_training_bg,
+        project_id, req.language, job.id, cancel_event,
+    )
+
+    return {
+        "job_id": job.id,
+        "status": "started",
+        "summary": decision.friendly_summary,
+    }
+
+
+def _run_training_bg(
+    project_id: str,
+    language: str,
+    job_id: str,
+    cancel_event: threading.Event,
+) -> None:
+    """Background worker for POST /train."""
+    from backend.pipelines.training import run_training
+    import dataclasses
+
+    try:
+        job_manager.start_job(job_id)
+        job_manager.update_progress(job_id, 0, "Starting voice profile training...")
+
+        result = run_training(
+            project_id=project_id,
+            job_id=job_id,
+            language=language,
+            cancel_event=cancel_event,
+        )
+
+        if result.success:
+            job_manager.complete_job(
+                job_id,
+                result=dataclasses.asdict(result),
+            )
+        else:
+            job_manager.fail_job(
+                job_id,
+                error=result.error or "Training failed for an unknown reason.",
+            )
+    except Exception as e:
+        job_manager.fail_job(job_id, error=str(e))
+    finally:
+        # Remove the cancel event from the registry regardless of outcome.
+        _cancel_events.pop(job_id, None)
 
 
 @router.get("/{project_id}/training-plan")

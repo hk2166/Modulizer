@@ -21,5 +21,9 @@ class Job:
     # (job hasn't started, or producer doesn't track ETA).
     eta_seconds: int | None = None
 
+    # Path to the latest validation audio sample synthesised at the end of
+    # a training round. UI polls this alongside `progress` to play previews.
+    validation_sample_path: str | None = None
+
     result: dict | None = None
     error: str | None = None

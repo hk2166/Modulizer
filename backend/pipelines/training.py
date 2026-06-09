@@ -130,6 +130,9 @@ class _BridgeState:
     # complete using observed wall-clock time. None until first round end.
     run_started_at: float = 0.0       # time.monotonic() at on_init_end
     last_eta_seconds: int | None = None
+    # Early-stopping tracking. patience=0 means disabled.
+    best_eval_loss: float = float("inf")
+    rounds_without_improvement: int = 0
 
 
 class ProgressBridge:
@@ -171,6 +174,9 @@ class ProgressBridge:
         cancel_event: Optional[threading.Event] = None,
         update_fn: Optional[Callable[..., None]] = None,
         initial_eta_seconds: Optional[int] = None,
+        early_stopping_patience: int = 3,
+        project_id: Optional[str] = None,
+        language: str = "en",
     ) -> None:
         """
         Args:
@@ -178,16 +184,12 @@ class ProgressBridge:
             total_epochs:  Plan's epoch count, used for the "round X of Y"
                            UI copy and percent denominator.
             cancel_event:  Threading event the cancellation endpoint flips.
-                           If set, the next step raises KeyboardInterrupt
-                           which Coqui's Trainer catches and shuts down
-                           cleanly (its `on_keyboard_interrupt` saves
-                           a checkpoint).
-            update_fn:     Override for testing. Defaults to the real
-                           job_manager.update_progress. Signature:
-                           (job_id, percent, message, eta_seconds=...) → None.
-            initial_eta_seconds: Static planning estimate from training_config.
-                           Used until the first round completes and we have
-                           real measurements. None = no ETA shown until then.
+            update_fn:     Override for testing. Defaults to job_manager.update_progress.
+            initial_eta_seconds: Static planning estimate, refined each round.
+            early_stopping_patience: Stop after this many rounds with no eval-loss
+                           improvement. 0 = disabled. Default 3 rounds.
+            project_id:    Used for validation sample synthesis after each round.
+            language:      Language code for validation sample synthesis.
         """
         self.job_id = job_id
         self.total_epochs = max(1, total_epochs)
@@ -195,6 +197,9 @@ class ProgressBridge:
         self._update_fn = update_fn or job_manager.update_progress
         self.state = _BridgeState()
         self.state.last_eta_seconds = initial_eta_seconds
+        self.early_stopping_patience = early_stopping_patience
+        self.project_id = project_id
+        self.language = language
 
     # ── Coqui plumbing ────────────────────────────────────────────
 
@@ -278,24 +283,77 @@ class ProgressBridge:
 
     def on_epoch_end(self, trainer) -> None:
         """
-        A round finished. Bump the round counter, recompute the ETA from
-        observed wall-clock seconds-per-round, and push a "saved progress"
-        message — Coqui saves a checkpoint at the end of every epoch.
+        A round finished. Recompute ETA, check early-stopping, synthesize
+        a validation sample, and push "saved progress" message.
         """
         import time
 
         self.state.epochs_done = getattr(trainer, "epochs_done", self.state.epochs_done + 1)
         percent = self._compute_percent(trainer)
 
-        # Recompute ETA from real time. After at least one round we have
-        # a measured seconds-per-round; multiply by remaining rounds.
-        # Static estimates from training_config are fine for the disclosure
-        # modal but degrade fast when the planning numbers were off.
+        # ── ETA from real wall-clock ──────────────────────────────
         if self.state.run_started_at > 0 and self.state.epochs_done > 0:
             elapsed = time.monotonic() - self.state.run_started_at
             avg_per_round = elapsed / self.state.epochs_done
             remaining_rounds = max(0, self.total_epochs - self.state.epochs_done)
             self.state.last_eta_seconds = int(remaining_rounds * avg_per_round)
+
+        # ── Early stopping ────────────────────────────────────────
+        # Read the current eval loss from the trainer. Coqui tracks
+        # `keep_avg_eval` (a running average of recent eval steps).
+        # We skip early-stopping if patience==0 or no eval is running.
+        if self.early_stopping_patience > 0:
+            try:
+                eval_loss = float(
+                    getattr(trainer, "keep_avg_eval", {}).get("eval_loss", float("inf"))
+                    or float("inf")
+                )
+                if eval_loss < self.state.best_eval_loss - 1e-4:
+                    self.state.best_eval_loss = eval_loss
+                    self.state.rounds_without_improvement = 0
+                else:
+                    self.state.rounds_without_improvement += 1
+                    logger.info(
+                        f"training: no improvement for "
+                        f"{self.state.rounds_without_improvement}/"
+                        f"{self.early_stopping_patience} rounds "
+                        f"(eval_loss={eval_loss:.4f})"
+                    )
+                    if self.state.rounds_without_improvement >= self.early_stopping_patience:
+                        logger.info("training: early stopping triggered")
+                        self._push(percent, "Best quality reached — wrapping up early.")
+                        raise KeyboardInterrupt("Early stopping: no eval-loss improvement.")
+            except KeyboardInterrupt:
+                raise  # re-raise early-stop signal
+            except Exception as e:
+                logger.debug(f"training: early-stopping eval read failed: {e}")
+
+        # ── Validation sample synthesis ───────────────────────────
+        # Synthesise a short phrase with the current partially-trained model
+        # so the user can hear their voice improving round by round.
+        # We run this synchronously here (adds ~5–15 s per round on CPU/GPU)
+        # because it has to happen before ProgressBridge pushes the round-end
+        # update so the job result carries the new sample path.
+        if self.project_id:
+            sample_path = _synthesize_validation_sample(
+                trainer=trainer,
+                project_id=self.project_id,
+                language=self.language,
+                epoch=self.state.epochs_done,
+            )
+            if sample_path:
+                # Attach the sample path to the job so the UI can play it.
+                # We call update_progress once with just the sample path;
+                # the main _push call below carries the human message.
+                try:
+                    self._update_fn(
+                        self.job_id, self.state.last_percent,
+                        self.state.last_message,
+                        eta_seconds=self.state.last_eta_seconds,
+                        validation_sample_path=sample_path,
+                    )
+                except Exception as e:
+                    logger.warning(f"ProgressBridge: sample path update failed: {e}")
 
         self._push(
             percent,
@@ -604,13 +662,25 @@ def run_training(
         total_epochs=plan.epochs,
         cancel_event=cancel_event,
         initial_eta_seconds=initial_eta,
+        early_stopping_patience=3,
+        project_id=project_id,
+        language=language,
     )
+
+    # ── Crash-safe resume: use an existing checkpoint if one exists ────────
+    # If training was previously interrupted, continue from the last saved
+    # checkpoint rather than starting over. Coqui's Trainer reads restore_path
+    # and picks up optimizer state + step count from the checkpoint file.
+    _best_existing, _last_existing = _find_checkpoints(output_dir)
+    restore_path = str(_last_existing) if _last_existing else ""
+    if restore_path:
+        logger.info(f"training: resuming from checkpoint {_last_existing.name}")
 
     # parse_command_line_args=False is critical — Coqui otherwise eats
     # uvicorn's argv and dies on the first unknown flag.
     trainer = Trainer(
         TrainerArgs(
-            restore_path="",                          # "" = train from scratch
+            restore_path=restore_path,
             skip_train_epoch=False,
             grad_accum_steps=plan.grad_accum_steps,
         ),
@@ -728,6 +798,67 @@ def _peek_sample_rate(wavs_dir: Path, default: int = 22050) -> int:
     except (StopIteration, FileNotFoundError, Exception) as e:
         logger.warning(f"training: couldn't peek dataset sample rate ({e}); falling back to {default} Hz")
         return default
+
+
+def _synthesize_validation_sample(
+    trainer,
+    project_id: str,
+    language: str,
+    epoch: int,
+) -> str | None:
+    """
+    Synthesise a short validation phrase using the model's current weights.
+
+    Called at the end of each training round so the UI can play the voice
+    improving over time. Runs inference directly on the live trainer model
+    (in eval mode) rather than loading a checkpoint from disk — faster,
+    and previews don't need a perfectly stable checkpoint.
+
+    Returns the absolute path to the generated .wav, or None on any failure.
+    Synthesis errors must never stop training.
+    """
+    VALIDATION_TEXT = {
+        "en": "Hello, this is a quick voice check after this round of training.",
+        "hi": "नमस्ते, यह प्रशिक्षण के बाद एक त्वरित आवाज़ जाँच है।",
+    }
+    text = VALIDATION_TEXT.get(language, VALIDATION_TEXT["en"])
+
+    try:
+        from backend.core.settings import DATA_DIR
+        from backend.services.project_service import get_reference_clip
+
+        ref_clip = get_reference_clip(project_id)
+        if ref_clip is None:
+            logger.warning("_synthesize_validation_sample: no reference clip found")
+            return None
+
+        exports_dir = DATA_DIR / "projects" / project_id / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        out_path = exports_dir / f"validation_epoch_{epoch:03d}.wav"
+
+        # Access the raw XTTS model from the GPTTrainer wrapper.
+        xtts = getattr(trainer.model, "xtts", None)
+        if xtts is None:
+            logger.warning("_synthesize_validation_sample: no xtts on trainer.model")
+            return None
+
+        import torch
+        xtts.eval()
+        with torch.no_grad():
+            xtts.tts_to_file(
+                text=text,
+                speaker_wav=ref_clip,
+                language=language,
+                file_path=str(out_path),
+            )
+        xtts.train()
+
+        logger.info(f"validation sample: epoch {epoch} → {out_path.name}")
+        return str(out_path.resolve())
+
+    except Exception as e:
+        logger.warning(f"_synthesize_validation_sample: failed (epoch {epoch}): {e}")
+        return None
 
 
 def _find_checkpoints(run_dir: Path) -> tuple[Path | None, Path | None]:

@@ -1,34 +1,16 @@
 """
 app.py — Gradio MVP for VoiceForge.
 
-Runs a small web UI that talks to the FastAPI backend over HTTP.
-
-Architecture:
-─────────────
-  Gradio Blocks    →   client.py    →   FastAPI (localhost:8000)
-   (this file)         (HTTP layer)        (your existing backend)
-
 Screens:
 ─────────
-  1. Welcome / hardware check        — `welcome_screen`
-  2. Project picker / create         — `project_screen`
-  3. Quick Clone (record → synth)    — `clone_screen`
-
-We use Gradio's "switch what's visible" pattern: every screen is a Group
-that we toggle via gr.update(visible=...). This is simpler than a real
-router and still feels like screens.
-
-Key Gradio concepts you'll see:
-────────────────────────────────
-• gr.Blocks — the container for a custom layout (vs gr.Interface which is
-  one input → one output).
-• gr.State — a hidden value that survives across event handlers. We use it
-  to track the active project id without showing it.
-• Event handlers — buttons/inputs have `.click(fn=..., inputs=[...], outputs=[...])`.
-  Gradio passes input component values to fn and assigns its return value
-  to the output components in order.
-• `time.sleep` polling — for our preprocess job we just block in Python
-  with a polling loop. Crude but works for the MVP.
+  1. Welcome / hardware check        — welcome_screen
+  2. Project picker / create         — project_screen
+  3. Quick Clone (record → synth)    — clone_screen
+  4. Voice Profile setup             — profile_screen
+     4a. Resource check / disclosure
+     4b. Record 30 clips (with prompts, progress)
+     4c. Review clips
+     4d. Train + live progress
 """
 
 from __future__ import annotations
@@ -40,34 +22,45 @@ import gradio as gr
 
 from frontend import client
 
-
-# ══════════════════════════════════════════════════════════════════
-# Hardware check copy
-# ══════════════════════════════════════════════════════════════════
-
-# Friendly label → BCP-47 language code. Order here drives the radio
-# button order; first entry is the default.
+# ── Language config ──────────────────────────────────────────────
 _LANG_LABEL_TO_CODE = {
     "English": "en",
     "Hindi (हिन्दी)": "hi",
 }
 LANGUAGE_CHOICES = list(_LANG_LABEL_TO_CODE.keys())
 
+VOICE_PROFILE_CLIPS = 30     # target clip count for a Voice Profile
 
-def _hardware_summary() -> tuple[str, str]:
-    """
-    Returns (status_markdown, fine_tuning_notice).
+# Default prompts (fallback when backend isn't reachable for prompt loading)
+_DEFAULT_PROMPTS_EN = [
+    "The quick brown fox jumps over the lazy dog.",
+    "She sells sea shells by the sea shore.",
+    "How much wood would a woodchuck chuck if a woodchuck could chuck wood?",
+    "Peter Piper picked a peck of pickled peppers.",
+    "I scream, you scream, we all scream for ice cream.",
+]
+_DEFAULT_PROMPTS_HI = [
+    "कच्चा पापड़, पक्का पापड़।",
+    "चंदा मामा दूर के, पुए पकाएं बूर के।",
+    "बाल कृष्ण लीला करें, माखन चुराते हैं।",
+    "सात समंदर पार से, गुरु ने भेजा प्यार से।",
+    "हवा में उड़ता जाए, मेरा लाल दुपट्टा मलमल का।",
+]
 
-    `status_markdown` is the always-encouraging top-line for the user.
-    `fine_tuning_notice` explains whether Voice Profile training will be
-    available later. Either way, Quick Clone is always fine.
-    """
+
+# ══════════════════════════════════════════════════════════════════
+# Shared helpers
+# ══════════════════════════════════════════════════════════════════
+
+def _hardware_summary() -> tuple[str, str, bool]:
+    """Returns (status_md, notice_md, can_train)."""
     try:
         sys = client.get_system_profile()
     except client.BackendError as e:
         return (
             f"### ⚠️ Couldn't reach the backend\n{e}",
             "Start the backend with `uvicorn backend.main:app` and refresh.",
+            False,
         )
 
     gpu = sys.get("gpu", {})
@@ -78,20 +71,20 @@ def _hardware_summary() -> tuple[str, str]:
     vram = gpu.get("vram_gb", 0.0)
     free_disk = disk.get("free_disk_gb", 0.0)
     ram_gb = ram.get("total_ram_gb", 0.0)
+    can_train = has_gpu and vram >= 4.0 and free_disk >= 5.0
 
     status = (
         "### ✅ Your machine is ready\n"
         "Quick Clone works on any hardware — you're all set."
     )
 
-    if has_gpu and vram >= 4.0 and free_disk >= 5.0:
+    if can_train:
         notice = (
             f"**Voice Profile (advanced) available** — "
             f"GPU detected ({gpu.get('gpu_name', 'unknown')}, {vram:.1f} GB VRAM). "
-            f"You'll be able to train a higher-quality profile later if you want."
+            f"You can train a higher-quality voice later."
         )
     else:
-        # Stay friendly. Don't lecture about what's missing.
         reasons = []
         if not has_gpu:
             reasons.append("no graphics card detected")
@@ -101,161 +94,132 @@ def _hardware_summary() -> tuple[str, str]:
             reasons.append(f"only {free_disk:.1f} GB free disk")
         notice = (
             f"**Note:** Voice Profile training won't be available on this machine "
-            f"({', '.join(reasons)}). Quick Clone is the recommended path anyway — "
-            f"it works great and is much faster."
+            f"({', '.join(reasons)}). Quick Clone is the recommended path anyway."
         )
 
     sysinfo = (
-        f"<small>"
-        f"OS: {sys.get('system', {}).get('os', '?')} · "
-        f"RAM: {ram_gb:.1f} GB · "
-        f"Free disk: {free_disk:.1f} GB"
-        f"</small>"
+        f"<small>OS: {sys.get('system', {}).get('os', '?')} · "
+        f"RAM: {ram_gb:.1f} GB · Free disk: {free_disk:.1f} GB</small>"
     )
+    return status, f"{notice}\n\n{sysinfo}", can_train
 
-    return status, f"{notice}\n\n{sysinfo}"
+
+def _get_prompts(language: str, count: int = VOICE_PROFILE_CLIPS) -> list[str]:
+    """Load prompts from the backend transcriber; fall back to defaults."""
+    try:
+        from backend.audio.transcriber import load_prompts
+        prompts = load_prompts(language)
+        texts = [p["text"] for p in prompts]
+        # Cycle if we need more than available
+        if len(texts) < count:
+            texts = (texts * ((count // len(texts)) + 1))[:count]
+        return texts[:count]
+    except Exception:
+        defaults = _DEFAULT_PROMPTS_EN if language == "en" else _DEFAULT_PROMPTS_HI
+        cycled = (defaults * ((count // len(defaults)) + 1))[:count]
+        return cycled
+
+
+def _poll_job(job_id: str, *, max_seconds: int = 600):
+    """
+    Generator: yields (message_str, eta_seconds | None, result | None).
+    Stops when job is completed / failed / cancelled or timeout.
+    """
+    last_message = None
+    for _ in range(max_seconds):
+        time.sleep(1)
+        try:
+            status = client.get_job(job_id)
+        except client.BackendError as e:
+            yield f"⚠️ {e}", None, None
+            return
+
+        msg = status.get("message") or ""
+        eta = status.get("eta_seconds")
+        sample = status.get("validation_sample_path")
+
+        if msg != last_message or sample:
+            last_message = msg
+            yield msg, eta, sample if sample else None
+
+        job_status = status.get("status")
+        if job_status in ("completed", "cancelled"):
+            yield msg, None, status.get("result")
+            return
+        if job_status == "failed":
+            yield f"⚠️ {status.get('error', 'Something went wrong.')}", None, None
+            return
 
 
 # ══════════════════════════════════════════════════════════════════
-# Event handlers — kept small, each maps cleanly to one user action
+# Screen 3 — Quick Clone event handlers
 # ══════════════════════════════════════════════════════════════════
 
 def on_create_project(name: str):
-    """Validate name, create project on backend, switch to clone screen."""
     name = (name or "").strip()
     if not name:
-        # Stay on the project screen and show an error
         return (
-            gr.update(),                        # project_id state
-            gr.update(),                        # project_screen visibility
-            gr.update(),                        # clone_screen visibility
-            gr.update(value="Please give your voice a name."),  # status text
-            gr.update(),                        # clone screen header
+            gr.update(), gr.update(), gr.update(),
+            gr.update(value="Please give your voice a name."),
+            gr.update(),
         )
-
     try:
         proj = client.create_project(name)
     except client.BackendError as e:
         return (
-            gr.update(),
-            gr.update(),
-            gr.update(),
+            gr.update(), gr.update(), gr.update(),
             gr.update(value=f"Couldn't create the project: {e}"),
             gr.update(),
         )
-
-    # Success — store id, switch screens
     return (
-        proj["id"],                                # project_id state
-        gr.update(visible=False),                  # hide project screen
-        gr.update(visible=True),                   # show clone screen
-        gr.update(value=""),                       # clear status
-        gr.update(value=f"### {proj['name']}"),    # set clone screen header
+        proj["id"],
+        gr.update(visible=False),
+        gr.update(visible=True),
+        gr.update(value=""),
+        gr.update(value=f"### {proj['name']}"),
     )
 
 
 def on_recording(audio_path: str | None, project_id: str | None):
-    """
-    Called when the user finishes recording (or uploads a file).
-    Uploads the clip, runs server-side validation, and shows feedback.
-
-    Returns:
-      - validation feedback markdown
-      - whether the "Continue" path is unlocked (we use state to gate it)
-    """
     if not audio_path:
         return "Hit record and read the prompt aloud.", False, None
     if not project_id:
         return "Create a project first.", False, None
-
     try:
         result = client.upload_clip(project_id, audio_path)
     except client.BackendError as e:
         return f"❌ Upload failed: {e}", False, None
 
-    # Inline validation feedback. The backend already returns user-friendly
-    # error messages — we just format them.
     if result["valid"]:
-        msg = (
-            f"✅ **Looks great!** "
-            f"({result['duration_s']:.1f}s, {result['sample_rate']} Hz)"
-        )
+        msg = f"✅ **Looks great!** ({result['duration_s']:.1f}s, {result['sample_rate']} Hz)"
         if result.get("warning"):
             msg += f"\n\n⚠️ {' '.join(result['warning'])}"
         return msg, True, result["clip_id"]
 
-    # Failed validation — show the friendliest of the errors
     error_text = " ".join(result.get("errors", ["Try again."]))
     return f"⚠️ **Try again** — {error_text}", False, None
 
 
 def on_preprocess(project_id: str | None):
-    """
-    Auto-runs after a clip validates successfully. Kicks off preprocessing
-    and polls the job until done. We yield Gradio updates as the status
-    changes — this gives the user real-time feedback without WebSockets.
-
-    Generators in Gradio handlers:
-      `yield` lets you stream multiple updates from one handler. Each yield
-      becomes a UI repaint. Gradio handles the streaming wire format for us.
-    """
     if not project_id:
         yield "Need a project first."
         return
-
     try:
         job = client.start_preprocess(project_id)
     except client.BackendError as e:
         yield f"⚠️ {e}"
         return
-
-    job_id = job["job_id"]
     yield "🎧 Cleaning up your recording..."
-
-    # Poll loop. In production we'd use SSE or WebSocket; for MVP this is fine.
-    last_message = None
-    for _ in range(60):  # max 60s — plenty for one clip
-        time.sleep(1)
-        try:
-            status = client.get_job(job_id)
-        except client.BackendError as e:
-            yield f"⚠️ {e}"
-            return
-
-        # Stream the backend's own progress message if it changed.
-        # The job manager updates `message` like "Processing clips 1 of 1..."
-        msg = status.get("message")
-        if msg and msg != last_message:
-            yield f"🎧 {msg}"
-            last_message = msg
-
-        if status["status"] == "completed":
+    for msg, _eta, _result in _poll_job(job["job_id"], max_seconds=60):
+        if _result is not None:
             yield "✨ Ready to use your voice."
             return
-        if status["status"] == "failed":
-            yield f"⚠️ Something went wrong: {status.get('error', 'unknown')}"
-            return
-
+        if msg:
+            yield f"🎧 {msg}"
     yield "⚠️ Preprocessing is taking longer than expected. Try again."
 
 
-def on_synthesize(
-    text: str,
-    project_id: str | None,
-    clip_id: str | None,
-    language: str | None,
-):
-    """
-    Generate speech and return a path the audio component can play.
-
-    We require both project_id and clip_id (the latter implies a recording
-    has uploaded, validated, and preprocessed successfully).
-
-    `language` is the user's pick from the radio above the text box —
-    drives both XTTS synthesis and (downstream) which Whisper model is
-    loaded for clip QA. Maps the friendly label back to the BCP-47 code
-    the backend expects.
-    """
+def on_synthesize(text: str, project_id: str | None, clip_id: str | None, language: str | None):
     text = (text or "").strip()
     if not text:
         return None, "Type some text to generate speech."
@@ -263,78 +227,36 @@ def on_synthesize(
         return None, "Create a project first."
     if not clip_id:
         return None, "Record a voice sample on the Record tab first."
-
     lang_code = _LANG_LABEL_TO_CODE.get(language or "English", "en")
-
     try:
         result = client.synthesize(project_id, text, language=lang_code)
     except client.BackendError as e:
         return None, f"⚠️ {e}"
-
-    # The backend writes to a path on local disk. Gradio's gr.Audio can read
-    # that path directly when filepath is the value type.
     return result["output"], "🔊 Done — hit play."
 
 
 def on_import(source_path: str | None, project_id: str | None):
-    """
-    Handle a long audio/video upload. Streams progress as the backend
-    extracts audio, segments it, and saves each segment as a clip.
-
-    Yields:
-      Markdown status messages (Gradio re-renders on each yield).
-
-    Final yield includes the new clip_id (last one created) so the user
-    can immediately go to the Generate tab.
-    """
     if not source_path:
         yield "Drop an audio or video file above to import.", None
         return
     if not project_id:
         yield "Create a project first.", None
         return
-
     yield "📥 Uploading...", None
-
     try:
         job = client.import_recording(project_id, source_path)
     except client.BackendError as e:
         yield f"⚠️ Upload failed: {e}", None
         return
-
-    job_id = job["job_id"]
     yield "🎬 Pulling out the audio...", None
-
-    last_message = None
-    # Imports of long files can take a couple of minutes. Cap at 5 min.
-    for _ in range(300):
-        time.sleep(1)
-        try:
-            status = client.get_job(job_id)
-        except client.BackendError as e:
-            yield f"⚠️ {e}", None
-            return
-
-        msg = status.get("message")
-        if msg and msg != last_message:
-            yield f"🎬 {msg}", None
-            last_message = msg
-
-        if status["status"] == "completed":
-            result = status.get("result", {}) or {}
+    for msg, _eta, result in _poll_job(job["job_id"], max_seconds=300):
+        if result is not None:
             kept = result.get("segments_kept", 0)
             found = result.get("segments_found", 0)
             clip_ids = result.get("clip_ids", [])
-
             if kept == 0:
-                yield (
-                    "⚠️ We couldn't find usable speech segments in that file.",
-                    None,
-                )
+                yield "⚠️ We couldn't find usable speech segments in that file.", None
                 return
-
-            # Use the first imported clip as the active reference for synthesis.
-            # The user can re-import or record again to switch.
             yield (
                 f"✨ **Imported {kept} clip{'s' if kept != 1 else ''}** "
                 f"(out of {found} speech regions found). "
@@ -342,21 +264,304 @@ def on_import(source_path: str | None, project_id: str | None):
                 clip_ids[0] if clip_ids else None,
             )
             return
-
-        if status["status"] == "failed":
-            yield f"⚠️ {status.get('error', 'Import failed.')}", None
-            return
-
+        if msg:
+            yield f"🎬 {msg}", None
     yield "⚠️ This is taking longer than expected. Try a shorter file.", None
 
 
 def on_back_to_picker():
-    """Go back to the project screen, clearing project state."""
     return (
-        None,                          # project_id state
-        gr.update(visible=True),       # show project screen
-        gr.update(visible=False),      # hide clone screen
+        None,
+        gr.update(visible=True),
+        gr.update(visible=False),
     )
+
+
+# ══════════════════════════════════════════════════════════════════
+# Screen 4 — Voice Profile event handlers
+# ══════════════════════════════════════════════════════════════════
+
+def on_open_voice_profile(project_id: str | None):
+    """
+    CTA handler: check hardware, fetch training plan, render disclosure.
+    Returns (profile_screen visible, disclosure_md, proceed_btn visible,
+             refuse_notice, clone_screen visible).
+    """
+    if not project_id:
+        return (
+            gr.update(visible=False),
+            "Create a project first.",
+            gr.update(visible=False),
+            "",
+            gr.update(visible=True),
+        )
+    try:
+        plan = client.get_training_plan(project_id)
+    except client.BackendError as e:
+        return (
+            gr.update(visible=False),
+            f"⚠️ {e}",
+            gr.update(visible=False),
+            "",
+            gr.update(visible=True),
+        )
+
+    if not plan.get("can_train"):
+        refusal = plan.get("refusal_reason", "This machine can't run training.")
+        suggestion = plan.get("suggested_action", "")
+        return (
+            gr.update(visible=True),
+            f"## Voice Profile — Not available on this machine\n\n{refusal}",
+            gr.update(visible=False),
+            f"\n💡 **{suggestion}**" if suggestion else "",
+            gr.update(visible=False),
+        )
+
+    summary = plan.get("summary", "")
+    data_summary = plan.get("data_summary", "")
+    disclosure_md = (
+        f"## Set up your Voice Profile\n\n"
+        f"You'll record **{VOICE_PROFILE_CLIPS} short clips** "
+        f"(each 3–15 seconds) reading the prompts shown.\n\n"
+        f"---\n\n"
+        f"**What happens next:**\n\n"
+        f"{summary}\n\n"
+        f"---\n\n"
+        f"**What gets saved:**\n\n"
+        f"{data_summary}"
+    )
+    return (
+        gr.update(visible=True),
+        disclosure_md,
+        gr.update(visible=True),
+        "",
+        gr.update(visible=False),
+    )
+
+
+def on_start_recording_session(project_id: str | None, language: str | None):
+    """
+    User confirmed the disclosure. Load prompts, switch to the recording tab.
+    Returns (prompts state, prompt_text, progress_label, rec_panel visible,
+             disclosure_panel visible).
+    """
+    lang_code = _LANG_LABEL_TO_CODE.get(language or "English", "en")
+    prompts = _get_prompts(lang_code, VOICE_PROFILE_CLIPS)
+    first_prompt = prompts[0] if prompts else "Speak clearly for a few seconds."
+    return (
+        prompts,                                   # prompts_state
+        0,                                         # clip_index_state (0-based)
+        f"> *{first_prompt}*",                     # prompt_display
+        f"Clip 1 of {VOICE_PROFILE_CLIPS}",        # progress_label
+        gr.update(visible=True),                   # rec_panel
+        gr.update(visible=False),                  # disclosure_panel
+    )
+
+
+def on_profile_recording(
+    audio_path: str | None,
+    project_id: str | None,
+    prompts: list,
+    clip_index: int,
+):
+    """
+    Voice Profile recording: upload + validate one clip, then advance prompt.
+    Returns (feedback_md, new_clip_index, prompt_display, progress_label,
+             profile_clip_ids state).
+    """
+    if not audio_path:
+        prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else "Speak now."
+        return f"Hit record and read the prompt.", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", []
+    if not project_id:
+        return "Create a project first.", clip_index, "", "", []
+
+    try:
+        result = client.upload_clip(project_id, audio_path)
+    except client.BackendError as e:
+        prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
+        return f"❌ Upload failed: {e}", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", []
+
+    if not result["valid"]:
+        error_text = " ".join(result.get("errors", ["Try again."]))
+        prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
+        return (
+            f"⚠️ **Try again** — {error_text}",
+            clip_index,
+            f"> *{prompt}*",
+            f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}",
+            [],
+        )
+
+    # Good clip — advance
+    new_index = clip_index + 1
+    clip_id = result["clip_id"]
+    feedback = (
+        f"✅ Clip {clip_index+1} saved "
+        f"({result['duration_s']:.1f}s)"
+    )
+    if new_index >= VOICE_PROFILE_CLIPS:
+        # All clips recorded
+        return (
+            f"{feedback}\n\n🎉 All {VOICE_PROFILE_CLIPS} clips recorded! "
+            f"Go to the **Review** tab to check them.",
+            new_index,
+            "",
+            f"Done — {VOICE_PROFILE_CLIPS} of {VOICE_PROFILE_CLIPS}",
+            [clip_id],
+        )
+
+    next_prompt = prompts[new_index] if new_index < len(prompts) else "Speak clearly."
+    return (
+        feedback,
+        new_index,
+        f"> *{next_prompt}*",
+        f"Clip {new_index+1} of {VOICE_PROFILE_CLIPS}",
+        [clip_id],
+    )
+
+
+def on_load_review(project_id: str | None):
+    """Fetch all clips and render a review table."""
+    if not project_id:
+        return "No project selected."
+    try:
+        clips = client.list_clips(project_id)
+    except client.BackendError as e:
+        return f"⚠️ {e}"
+    if not clips:
+        return "No clips recorded yet. Go back to the Record tab."
+    lines = [f"**{len(clips)} clips recorded:**\n"]
+    for i, c in enumerate(clips, 1):
+        lines.append(
+            f"{i}. `{c['clip_id'][:8]}…` — "
+            f"{c['duration_s']:.1f}s "
+            f"@ {c['sample_rate']} Hz"
+        )
+    return "\n".join(lines)
+
+
+def on_delete_last_clip(project_id: str | None, clip_index: int, prompts: list):
+    """Delete the most recently recorded clip and step back one prompt."""
+    if not project_id or clip_index <= 0:
+        return "Nothing to delete.", clip_index, ""
+    try:
+        clips = client.list_clips(project_id)
+        if clips:
+            client.delete_clip(project_id, clips[-1]["clip_id"])
+    except client.BackendError as e:
+        return f"⚠️ Couldn't delete: {e}", clip_index, ""
+
+    new_index = max(0, clip_index - 1)
+    prompt = prompts[new_index] if prompts and new_index < len(prompts) else ""
+    return (
+        f"↩️ Clip {clip_index} deleted — re-record it.",
+        new_index,
+        f"> *{prompt}*",
+    )
+
+
+def on_start_training(project_id: str | None, language: str | None):
+    """
+    Build dataset then kick off training. Streams progress messages.
+    Yields (status_md, eta_label, preview_audio_path).
+    """
+    if not project_id:
+        yield "No project selected.", "", None
+        return
+
+    lang_code = _LANG_LABEL_TO_CODE.get(language or "English", "en")
+
+    # ── Step 1: preprocess all clips ──────────────────────────────
+    yield "🎧 Cleaning up your recordings...", "", None
+    try:
+        preprocess_job = client.start_preprocess(project_id)
+    except client.BackendError as e:
+        yield f"⚠️ {e}", "", None
+        return
+    for msg, _eta, result in _poll_job(preprocess_job["job_id"], max_seconds=120):
+        if result is not None:
+            break
+        if msg:
+            yield f"🎧 {msg}", "", None
+
+    # ── Step 2: build dataset ─────────────────────────────────────
+    yield "📋 Preparing your training dataset...", "", None
+    try:
+        ds_job = client.build_dataset(project_id, language=lang_code)
+    except client.BackendError as e:
+        yield f"⚠️ {e}", "", None
+        return
+    for msg, _eta, result in _poll_job(ds_job["job_id"], max_seconds=300):
+        if result is not None:
+            break
+        if msg:
+            yield f"📋 {msg}", "", None
+
+    # ── Step 3: train ─────────────────────────────────────────────
+    yield "🧠 Starting training — this will take a while...", "", None
+    try:
+        train = client.start_training(project_id, language=lang_code)
+    except client.BackendError as e:
+        yield f"⚠️ {e}", "", None
+        return
+
+    job_id = train["job_id"]
+    last_sample = None
+
+    for msg, eta, sample in _poll_job(job_id, max_seconds=6 * 3600):
+        # Friendly progress copy that avoids ML jargon
+        friendly = _training_copy(msg)
+        eta_label = _format_eta(eta) if eta else ""
+
+        if sample and sample != last_sample:
+            last_sample = sample
+
+        if sample or (msg and "ready" in msg.lower()):
+            yield friendly, eta_label, last_sample
+        elif msg:
+            yield friendly, eta_label, None
+
+        # Detect completion
+        if msg and "ready" in msg.lower():
+            yield "🎉 Your Voice Profile is ready! Try it in the Generate tab.", "", last_sample
+            return
+
+    yield "⚠️ Training timed out. Check the logs.", "", last_sample
+
+
+def _training_copy(backend_msg: str) -> str:
+    """Map backend progress messages to friendly, jargon-free copy."""
+    msg = (backend_msg or "").lower()
+    if not msg:
+        return "Training in progress..."
+    if "getting things ready" in msg or "ready" in msg and "voice" not in msg:
+        return "🔧 Getting everything ready..."
+    if "listening" in msg:
+        return "👂 Listening to your voice..."
+    if "learning" in msg:
+        return "🧠 Learning your voice..."
+    if "almost" in msg:
+        return "✨ Almost ready..."
+    if "saved progress" in msg or "round" in msg:
+        # Extract round info if present e.g. "round 3 of 6"
+        return f"💾 {backend_msg}"
+    if "stopping" in msg or "stopped" in msg:
+        return "⏹️ Stopping and saving..."
+    if "profile is ready" in msg:
+        return "🎉 Your Voice Profile is ready!"
+    return f"⏳ {backend_msg}"
+
+
+def _format_eta(eta_seconds: int | None) -> str:
+    if not eta_seconds or eta_seconds <= 0:
+        return ""
+    m, s = divmod(int(eta_seconds), 60)
+    if m >= 60:
+        h, m2 = divmod(m, 60)
+        return f"~{h}h {m2}m remaining"
+    if m > 0:
+        return f"~{m}m {s}s remaining"
+    return f"~{s}s remaining"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -364,15 +569,13 @@ def on_back_to_picker():
 # ══════════════════════════════════════════════════════════════════
 
 def build_app() -> gr.Blocks:
-    # Gradio 6 moved `theme` to launch() — we still set it here as a hint
-    # for IDE introspection but it'll be applied at launch time.
-    # `analytics_enabled=False` here (Gradio 6) — keeps the app fully local,
-    # no pings to Gradio's analytics servers. Matches our local-first promise.
     with gr.Blocks(title="VoiceForge", analytics_enabled=False) as app:
 
-        # Persistent state — survives across screens. value=None = no project yet.
-        project_id = gr.State(value=None)
-        last_clip_id = gr.State(value=None)
+        # Persistent state
+        project_id    = gr.State(value=None)
+        last_clip_id  = gr.State(value=None)   # Quick Clone active clip
+        prompts_state = gr.State(value=[])      # Voice Profile prompt list
+        clip_index    = gr.State(value=0)       # Voice Profile recording index
 
         # ── Header ────────────────────────────────────────────────
         gr.Markdown("# 🎙️ VoiceForge")
@@ -381,31 +584,32 @@ def build_app() -> gr.Blocks:
             "Everything runs on your machine."
         )
 
-        # ── Screen 1: Welcome / hardware check ────────────────────
-        # We render this once at startup using `_hardware_summary()`.
+        # ─────────────────────────────────────────────────────────
+        # Screen 1: Welcome / hardware check
+        # ─────────────────────────────────────────────────────────
         with gr.Group(visible=True) as welcome_screen:
-            status_md, notice_md = _hardware_summary()
+            status_md, notice_md, _can_train = _hardware_summary()
             gr.Markdown(status_md)
             gr.Markdown(notice_md)
             welcome_continue = gr.Button("Get started →", variant="primary")
 
-        # ── Screen 2: Project picker / create ─────────────────────
-        # MVP: just create. Listing existing projects is a follow-up.
+        # ─────────────────────────────────────────────────────────
+        # Screen 2: Project picker / create
+        # ─────────────────────────────────────────────────────────
         with gr.Group(visible=False) as project_screen:
             gr.Markdown("## Name your voice")
             gr.Markdown(
-                "Give it any label — 'My voice', 'Narrator', whatever. "
-                "You can have multiple voices and switch between them."
+                "Give it any label — 'My voice', 'Narrator', whatever."
             )
             name_in = gr.Textbox(
-                label="Voice name",
-                placeholder="e.g. My voice",
-                max_lines=1,
+                label="Voice name", placeholder="e.g. My voice", max_lines=1,
             )
             create_btn = gr.Button("Create", variant="primary")
             project_status = gr.Markdown("")
 
-        # ── Screen 3: Quick Clone (record → synth) ────────────────
+        # ─────────────────────────────────────────────────────────
+        # Screen 3: Quick Clone
+        # ─────────────────────────────────────────────────────────
         with gr.Group(visible=False) as clone_screen:
             clone_header = gr.Markdown("### Voice")
 
@@ -415,40 +619,20 @@ def build_app() -> gr.Blocks:
                     "> *The quick brown fox jumps over the lazy dog. "
                     "I'm setting up my voice today and it sounds great so far.*"
                 )
-
-                # `sources=["microphone"]` enables in-browser recording.
-                # `type="filepath"` makes Gradio save a temp .wav and pass us the path,
-                # which is exactly what our upload helper expects.
-                # `waveform_options=...` shows the visual preview.
                 mic = gr.Audio(
                     sources=["microphone", "upload"],
                     type="filepath",
                     label="Recording",
                     waveform_options=gr.WaveformOptions(show_recording_waveform=True),
                 )
-
                 clip_feedback = gr.Markdown("")
                 preprocess_status = gr.Markdown("")
 
-                # Hidden gate: only after validation passes do we enable the synth section.
-                # We bind to `last_clip_id` state — it's None until a clip validates.
-
             with gr.Tab("Import recording"):
                 gr.Markdown(
-                    "**Got a longer recording?** Drop a video or audio file "
-                    "(podcast, interview, voice memo, etc.) and we'll split it "
-                    "into clean segments. Works with `.mp4`, `.mp3`, `.m4a`, "
-                    "`.wav`, and most other formats."
+                    "**Got a longer recording?** Drop a video or audio file and "
+                    "we'll split it into clean segments."
                 )
-                gr.Markdown(
-                    "<small>Why segment? The voice engine only uses about "
-                    "30 seconds of reference audio. A longer recording gives "
-                    "us many candidate segments to pick from — better quality "
-                    "than one short clip.</small>"
-                )
-                # `gr.File` accepts arbitrary uploads. We don't constrain the
-                # file_types list because ffmpeg handles almost anything;
-                # better to let the backend validate than reject good inputs early.
                 source_file = gr.File(
                     label="Audio or video file",
                     file_count="single",
@@ -466,9 +650,7 @@ def build_app() -> gr.Blocks:
                     choices=LANGUAGE_CHOICES,
                     value=LANGUAGE_CHOICES[0],
                     label="Language",
-                    info="Pick the language you're typing in. Hindi uses a "
-                         "more accurate transcriber when checking your "
-                         "training clips.",
+                    info="Hindi uses a more accurate speech recognizer.",
                 )
                 text_in = gr.Textbox(
                     label="Text",
@@ -479,30 +661,106 @@ def build_app() -> gr.Blocks:
                 synth_status = gr.Markdown("")
                 audio_out = gr.Audio(label="Output", type="filepath", interactive=False)
 
+            with gr.Tab("Voice Profile ✨"):
+                gr.Markdown(
+                    "Record 30 clips to train a higher-quality Voice Profile. "
+                    "Requires a GPU with at least 4 GB memory."
+                )
+                profile_lang_in = gr.Radio(
+                    choices=LANGUAGE_CHOICES,
+                    value=LANGUAGE_CHOICES[0],
+                    label="Training language",
+                )
+                setup_profile_btn = gr.Button("Set up Voice Profile →", variant="secondary")
+                profile_cta_status = gr.Markdown("")
+
             with gr.Row():
                 back_btn = gr.Button("← Back to projects")
 
+        # ─────────────────────────────────────────────────────────
+        # Screen 4: Voice Profile
+        # ─────────────────────────────────────────────────────────
+        with gr.Group(visible=False) as profile_screen:
+            gr.Markdown("## 🎤 Voice Profile")
+
+            # ── 4a: Disclosure panel ──────────────────────────────
+            with gr.Group(visible=True) as disclosure_panel:
+                disclosure_md = gr.Markdown("")
+                disclosure_refuse = gr.Markdown("")
+                profile_lang_confirm = gr.Radio(
+                    choices=LANGUAGE_CHOICES,
+                    value=LANGUAGE_CHOICES[0],
+                    label="Training language",
+                    visible=True,
+                )
+                start_recording_btn = gr.Button(
+                    "I understand — start recording →",
+                    variant="primary",
+                    visible=False,
+                )
+                back_to_clone_from_disclosure = gr.Button("← Back")
+
+            # ── 4b: Recording panel ───────────────────────────────
+            with gr.Group(visible=False) as rec_panel:
+                profile_progress_label = gr.Markdown(f"Clip 1 of {VOICE_PROFILE_CLIPS}")
+                prompt_display = gr.Markdown("")
+
+                profile_mic = gr.Audio(
+                    sources=["microphone", "upload"],
+                    type="filepath",
+                    label="Recording",
+                    waveform_options=gr.WaveformOptions(show_recording_waveform=True),
+                )
+                profile_clip_feedback = gr.Markdown("")
+
+                with gr.Row():
+                    delete_last_btn = gr.Button("↩️ Re-record last clip", variant="stop")
+                    go_to_review_btn = gr.Button("Review clips →", variant="secondary")
+
+            # ── 4c: Review panel ──────────────────────────────────
+            with gr.Group(visible=False) as review_panel:
+                gr.Markdown("### Review your clips")
+                review_list = gr.Markdown("")
+                with gr.Row():
+                    back_to_rec_btn = gr.Button("← Back to recording")
+                    start_train_btn = gr.Button("Train voice profile →", variant="primary")
+
+            # ── 4d: Training panel ────────────────────────────────
+            with gr.Group(visible=False) as train_panel:
+                gr.Markdown("### Training your Voice Profile")
+                train_status = gr.Markdown("Starting...")
+                train_eta = gr.Markdown("")
+                gr.Markdown("**Preview** (updates each round once training begins):")
+                train_preview = gr.Audio(
+                    label="Voice preview",
+                    type="filepath",
+                    interactive=False,
+                    autoplay=True,
+                )
+                cancel_train_btn = gr.Button("Stop training", variant="stop")
+                train_job_id = gr.State(value=None)
+
+            back_to_clone_from_profile = gr.Button("← Back to Quick Clone", visible=False)
+
         # ══════════════════════════════════════════════════════════
-        # Wire up events
+        # Wiring
         # ══════════════════════════════════════════════════════════
 
-        # Welcome → Project screen
+        # Screen 1 → 2
         welcome_continue.click(
             fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
             outputs=[welcome_screen, project_screen],
         )
 
-        # Create project → Clone screen
+        # Screen 2 → 3
         create_btn.click(
             fn=on_create_project,
             inputs=[name_in],
-            outputs=[project_id, project_screen, clone_screen, project_status, clone_header],
+            outputs=[project_id, project_screen, clone_screen,
+                     project_status, clone_header],
         )
 
-        # Recording finishes → upload + validate, then auto-preprocess.
-        # `mic.stop_recording` fires when the user stops the mic.
-        # `mic.upload` fires when they drop a file in.
-        # `.then(...)` chains the preprocess call so it runs only after validation.
+        # Quick Clone: record → validate → preprocess
         for trigger in (mic.stop_recording, mic.upload):
             trigger(
                 fn=on_recording,
@@ -514,22 +772,111 @@ def build_app() -> gr.Blocks:
                 outputs=[preprocess_status],
             )
 
-        # Import recording (long video/audio → segmented clips)
-        # Outputs: status markdown + last_clip_id state (so Generate can use it)
+        # Quick Clone: import
         import_btn.click(
             fn=on_import,
             inputs=[source_file, project_id],
             outputs=[import_status, last_clip_id],
         )
 
-        # Generate
+        # Quick Clone: generate
         gen_btn.click(
             fn=on_synthesize,
             inputs=[text_in, project_id, last_clip_id, language_in],
             outputs=[audio_out, synth_status],
         )
 
-        # Back to picker
+        # Screen 3 → 4 (Voice Profile CTA)
+        setup_profile_btn.click(
+            fn=on_open_voice_profile,
+            inputs=[project_id],
+            outputs=[
+                profile_screen,
+                disclosure_md,
+                start_recording_btn,
+                disclosure_refuse,
+                clone_screen,
+            ],
+        )
+
+        # Disclosure → start recording session
+        start_recording_btn.click(
+            fn=on_start_recording_session,
+            inputs=[project_id, profile_lang_confirm],
+            outputs=[
+                prompts_state,
+                clip_index,
+                prompt_display,
+                profile_progress_label,
+                rec_panel,
+                disclosure_panel,
+            ],
+        )
+
+        # Back buttons: disclosure → clone
+        back_to_clone_from_disclosure.click(
+            fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
+            outputs=[profile_screen, clone_screen],
+        )
+
+        # Voice Profile recording
+        for trigger in (profile_mic.stop_recording, profile_mic.upload):
+            trigger(
+                fn=on_profile_recording,
+                inputs=[profile_mic, project_id, prompts_state, clip_index],
+                outputs=[
+                    profile_clip_feedback,
+                    clip_index,
+                    prompt_display,
+                    profile_progress_label,
+                    gr.State(),  # returned clip_ids (not used directly in UI)
+                ],
+            )
+
+        # Re-record last clip
+        delete_last_btn.click(
+            fn=on_delete_last_clip,
+            inputs=[project_id, clip_index, prompts_state],
+            outputs=[profile_clip_feedback, clip_index, prompt_display],
+        )
+
+        # Recording → Review
+        go_to_review_btn.click(
+            fn=on_load_review,
+            inputs=[project_id],
+            outputs=[review_list],
+        ).then(
+            fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
+            outputs=[rec_panel, review_panel],
+        )
+
+        # Review → back to recording
+        back_to_rec_btn.click(
+            fn=lambda: (gr.update(visible=True), gr.update(visible=False)),
+            outputs=[rec_panel, review_panel],
+        )
+
+        # Review → Train
+        start_train_btn.click(
+            fn=lambda: (
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=True),
+            ),
+            outputs=[review_panel, train_panel, back_to_clone_from_profile],
+        ).then(
+            fn=on_start_training,
+            inputs=[project_id, profile_lang_confirm],
+            outputs=[train_status, train_eta, train_preview],
+        )
+
+        # Back to clone from profile screen (bottom of profile)
+        back_to_clone_from_profile.click(
+            fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
+            outputs=[profile_screen, clone_screen],
+        )
+
+        # Quick Clone back to picker
         back_btn.click(
             fn=on_back_to_picker,
             outputs=[project_id, project_screen, clone_screen],
@@ -543,25 +890,13 @@ def build_app() -> gr.Blocks:
 # ══════════════════════════════════════════════════════════════════
 
 def main():
-    """
-    Launch Gradio.
-
-    `server_name="127.0.0.1"` keeps it local-only (matches our local-first promise).
-    `inbrowser=True` opens it automatically when you run the file.
-    `theme=...` applies the visual theme (moved from Blocks() in Gradio 6).
-    `allowed_paths=...` lets Gradio serve files from our user-data dir.
-        Gradio 4+ sandboxes file serving — it only allows files inside the
-        cwd, /tmp, or explicitly allowed paths. Our backend writes generated
-        audio to ~/.local/share/voiceforge/..., which we whitelist here.
-    """
     from backend.core.settings import DATA_DIR
 
     app = build_app()
     app.launch(
         server_name="127.0.0.1",
         server_port=7860,
-        inbrowser=False,        # don't auto-open — keeps browser stderr noise
-                                # out of our terminal. Open the URL manually.
+        inbrowser=False,
         theme=gr.themes.Soft(),
         allowed_paths=[str(DATA_DIR)],
     )

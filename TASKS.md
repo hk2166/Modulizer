@@ -143,29 +143,29 @@ Goal: power users with capable hardware can fine-tune XTTS on 30 clips for highe
   - [x] Audit `preprocessor._spectral_denoise` — the path is off by default but spectral subtraction strips formants when used; consider replacing with a no-op or a learned model, not a hand-rolled gate.
   - [x]**Hindi (and other Indic-language) pronunciation gap:** XTTS's `tokenizer.preprocess_text` falls through to `basic_cleaners` (lowercase + whitespace) for Hindi — the maintainer left a `# @manmay will implement this` TODO. Same fallback hits Bengali, Tamil, Telugu, Marathi, Gujarati, Punjabi, Urdu. Two ways to close the gap, pick one or do both:
   - [x] **App-layer pre-normalizer (preferred):** add a `backend/audio/text_cleaners.py` with a `hindi_cleaners(text)` that handles schwa-deletion, halant rules, number expansion, and Latin→Devanagari for inevitable English-leak words. Run it inside `inference_service.generate_speech` and `dataset_builder._sanitize_text` before either path hits the model. Libraries to evaluate: `indic-transliteration`, `aksharamukha`. Survives pip upgrades and stays under our control.
-  - [x] **Venv monkey-patch (fallback):** at app startup, replace `TTS.tts.layers.xtts.tokenizer.VoiceBpeTokenizer.preprocess_text` with a wrapper that routes `lang="hi"` through our `hindi_cleaners` before the base call. Brittle (won't survive `pip install -U TTS`), but catches paths inside Coqui that bypass our service layer (training dataset loader, inference_stream, etc.). Only worth doing if option A leaves measurable gaps.
+  - [ ] **Venv monkey-patch (fallback):** at app startup, replace `TTS.tts.layers.xtts.tokenizer.VoiceBpeTokenizer.preprocess_text` with a wrapper that routes `lang="hi"` through our `hindi_cleaners` before the base call. Brittle (won't survive `pip install -U TTS`), but catches paths inside Coqui that bypass our service layer (training dataset loader, inference_stream, etc.). Only worth doing if option A leaves measurable gaps.
 - [x] Cooperative cancellation — training checks a flag every N batches
 - [x] Checkpoint saving to `data/projects/{id}/checkpoints/`
-- [ ] Early-stopping / best-checkpoint selection
-- [ ] Validation sample synthesis after each round (for UI preview)
-- [ ] Crash-safe checkpointing — resume from last good state
+- [x] Early-stopping / best-checkpoint selection
+- [x] Validation sample synthesis after each round (for UI preview)
+- [x] Crash-safe checkpointing — resume from last good state
 
 ### API
 
-- [ ] `POST /projects/{id}/train` — start training job (returns job_id)
-- [ ] `POST /jobs/{id}/cancel` — clean cooperative cancellation
-- [ ] `POST /projects/{id}/synthesize?profile=true` — use fine-tuned checkpoint instead of reference
+- [x] `POST /projects/{id}/train` — start training job (returns job_id)
+- [x] `POST /jobs/{id}/cancel` — clean cooperative cancellation
+- [x] `POST /projects/{id}/synthesize?profile=true` — use fine-tuned checkpoint instead of reference
 
 ### Frontend — Voice Profile UX
 
-- [ ] "Set up your voice profile" CTA → resource check → disclosure → record 30 clips → train
-- [ ] Recording flow:
-  - [ ] Show prompt text, record button, waveform preview
-  - [ ] Per-clip validation feedback
-  - [ ] Progress: clip X of 30
-- [ ] Review screen — list clips, replay, re-record
-- [ ] Friendly progress copy during training: "Listening to your voice...", "Almost ready..."
-- [ ] Preview clip auto-plays when training reaches a usable checkpoint
+- [x] "Set up your voice profile" CTA → resource check → disclosure → record 30 clips → train
+- [x] Recording flow:
+  - [x] Show prompt text, record button, waveform preview
+  - [x] Per-clip validation feedback
+  - [x] Progress: clip X of 30
+- [x] Review screen — list clips, replay, re-record
+- [x] Friendly progress copy during training: "Listening to your voice...", "Almost ready..."
+- [x] Preview clip auto-plays when training reaches a usable checkpoint
 
 ---
 
@@ -207,7 +207,7 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
   - [ ] XTTS v2 (~2 GB)
   - [ ] Whisper base (~150 MB) — only if Voice Profile is used
   - [ ] Clear copy: "Downloading voice engine (one-time, ~2 GB)..."
-- [ ] Models stored in user data dir, not next to the .exe
+- [x] Models stored in user data dir, not next to the .exe
 - [ ] Resume on interruption (network drop, app crash mid-download)
 
 ### Distribution

@@ -165,3 +165,45 @@ def synthesize(project_id: str, text: str, language: str = "en") -> dict:
 def preview_url(project_id: str, clip_id: str) -> str:
     """URL the UI can hand to an <audio> element to stream a generated clip."""
     return f"{BASE_URL}/projects/{project_id}/preview/{clip_id}"
+
+
+# ── Training ──────────────────────────────────────────────────────
+
+def get_training_plan(project_id: str) -> dict:
+    """
+    Fetch the hardware-based training plan and disclosure info.
+    Returns: {can_train, summary, refusal_reason, suggested_action,
+              data_summary, detected_hardware, plan}
+    """
+    return _get(f"/projects/{project_id}/training-plan")
+
+
+def build_dataset(project_id: str, language: str = "en") -> dict:
+    """Start async dataset-build job. Returns {job_id, status}."""
+    return _post(f"/projects/{project_id}/dataset", json={"language": language})
+
+
+def start_training(project_id: str, language: str = "en") -> dict:
+    """Start async training job. Returns {job_id, status, summary}."""
+    return _post(
+        f"/projects/{project_id}/train",
+        json={"language": language},
+        timeout=30,
+    )
+
+
+def cancel_job(job_id: str) -> dict:
+    """Request cooperative cancellation of a running job."""
+    return _post(f"/jobs/{job_id}/cancel")
+
+
+def synthesize_profile(project_id: str, text: str, language: str = "en") -> dict:
+    """
+    Generate speech using the fine-tuned Voice Profile checkpoint.
+    Returns: {output, mode, checkpoint, language}
+    """
+    return _post(
+        f"/projects/{project_id}/synthesize",
+        json={"text": text, "language": language, "profile": True},
+        timeout=SYNTH_TIMEOUT,
+    )
