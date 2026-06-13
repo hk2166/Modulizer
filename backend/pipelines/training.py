@@ -640,7 +640,7 @@ def run_training(
         # Scheduling — epochs derived from target_steps, see above
         epochs=epochs,
         run_eval=plan.run_eval,
-        eval_step=plan.eval_step,
+        run_eval_steps=plan.eval_step,
         # Mixed precision (fp16/bf16)
         mixed_precision=plan.mixed_precision,
         precision=plan.precision_dtype,    # "fp16" | "bf16" | "fp32"
