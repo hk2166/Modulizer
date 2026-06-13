@@ -739,15 +739,25 @@ def run_training(
 
 def _ensure_xtts_base_files() -> dict | None:
     """
-    Locate (don't download) the XTTS base files needed for fine-tuning.
+    Locate — and if needed, download — the XTTS base files required for fine-tuning.
 
-    GPT fine-tuning starts from the pretrained XTTS v2 weights. Coqui's
-    `ModelManager.download_model` puts them in a known directory after
-    the first inference call. We look there.
+    The Coqui TTS inference package bundles model.pth (GPT + HiFi-GAN) and
+    vocab.json, but fine-tuning also needs:
+      - dvae.pth     — the discrete VAE audio codec (separate from model.pth)
+      - mel_stats.pth — mel normalisation statistics
 
-    Returns a dict of paths, or None if the user hasn't run any
-    inference yet (in which case we ask them to do that first).
+    These aren't included in the standard TTS download because they're only
+    needed for training. We fetch them from Coqui's public CDN on first use
+    (< 50 MB total, one-time).
+
+    Returns a dict with keys: xtts, dvae, mel_norm, tokenizer — all str paths.
+    Returns None if anything is unreachable or missing after download.
     """
+    # Official Coqui CDN URLs for the fine-tuning-only files.
+    # Same URLs used in TTS/demos/xtts_ft_demo/utils/gpt_train.py.
+    DVAE_URL = "https://coqui.gateway.scarf.sh/hf-coqui/XTTS-v2/main/dvae.pth"
+    MEL_NORM_URL = "https://coqui.gateway.scarf.sh/hf-coqui/XTTS-v2/main/mel_stats.pth"
+
     try:
         from TTS.utils.manage import ModelManager
     except ImportError:
@@ -755,9 +765,6 @@ def _ensure_xtts_base_files() -> dict | None:
 
     try:
         manager = ModelManager()
-        # download_model is idempotent — if already downloaded, just returns
-        # the cached path. If not, it downloads (~2 GB). For training we
-        # need this anyway, so kicking the download here is fine.
         model_path, _, _ = manager.download_model(
             "tts_models/multilingual/multi-dataset/xtts_v2"
         )
@@ -766,17 +773,39 @@ def _ensure_xtts_base_files() -> dict | None:
         return None
 
     base = Path(model_path)
-    files = {
-        "xtts": base / "model.pth",
-        "dvae": base / "dvae.pth",
-        "mel_norm": base / "mel_stats.pth",
+
+    # model.pth and vocab.json are guaranteed by the standard inference download.
+    required = {
+        "xtts":      base / "model.pth",
         "tokenizer": base / "vocab.json",
     }
-    for name, path in files.items():
+    for name, path in required.items():
         if not path.exists():
-            logger.warning(f"training: missing XTTS base file '{name}' at {path}")
+            logger.warning(f"training: missing required XTTS file '{name}' at {path}")
             return None
-    return {k: str(v) for k, v in files.items()}
+
+    # dvae.pth and mel_stats.pth are training-only — download if missing.
+    training_extras = {
+        "dvae":     (base / "dvae.pth",      DVAE_URL),
+        "mel_norm": (base / "mel_stats.pth", MEL_NORM_URL),
+    }
+    for name, (path, url) in training_extras.items():
+        if not path.exists():
+            logger.info(f"training: downloading {name} from Coqui CDN → {path.name}")
+            try:
+                import urllib.request
+                urllib.request.urlretrieve(url, str(path))
+                logger.info(f"training: {name} downloaded ({path.stat().st_size // 1024} KB)")
+            except Exception as e:
+                logger.error(f"training: couldn't download {name}: {e}")
+                return None
+
+    return {
+        "xtts":      str(required["xtts"]),
+        "dvae":      str(training_extras["dvae"][0]),
+        "mel_norm":  str(training_extras["mel_norm"][0]),
+        "tokenizer": str(required["tokenizer"]),
+    }
 
 
 def _peek_sample_rate(wavs_dir: Path, default: int = 22050) -> int:
