@@ -47,6 +47,14 @@ class SynthesizeRequest(BaseModel):
     # than from one that's been high-pass-filtered, denoised, and RMS-normalized.
     # Enable only for genuinely poor inputs (heavy hum, big level swings).
     clean_reference: bool = False
+    # ── Pace / delivery tuning ────────────────────────────────────────────
+    # XTTS doesn't copy speaking rate from the reference — rhythm is generated
+    # each call. These let the user dial it in. "Too rushed / too robotic" is
+    # usually fixed with speed≈0.92 + temperature≈0.8.
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+    temperature: float = Field(0.75, ge=0.1, le=1.0)
+    length_penalty: float = Field(1.0, gt=0.0, le=10.0)
+    repetition_penalty: float = Field(5.0, ge=1.0, le=15.0)
 
 @router.post("", status_code=201)
 def post_create_project(req: CreateProjectRequest):
@@ -174,6 +182,15 @@ def synthesize(project_id: str, req: SynthesizeRequest):
 
     output_path = str(DATA_DIR / "projects" / project_id / "exports" / f"{uuid4()}.wav")
 
+    # Build synthesis tuning params from the request.
+    from backend.services.inference_service import SynthesisParams
+    params = SynthesisParams(
+        speed=req.speed,
+        temperature=req.temperature,
+        length_penalty=req.length_penalty,
+        repetition_penalty=req.repetition_penalty,
+    )
+
     if req.profile:
         # ── Voice Profile path: synthesize from fine-tuned checkpoint ──
         from backend.services.inference_service import generate_speech_from_checkpoint
@@ -218,6 +235,7 @@ def synthesize(project_id: str, req: SynthesizeRequest):
                 config_path=str(config_path),
                 speaker_wav=reference,
                 language=req.language,
+                params=params,
             )
         except ValueError as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -251,6 +269,7 @@ def synthesize(project_id: str, req: SynthesizeRequest):
             output_path=output_path,
             speaker_wav=reference_for_synth,
             language=req.language,
+            params=params,
         )
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))

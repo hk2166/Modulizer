@@ -150,14 +150,31 @@ def get_job(job_id: str) -> dict:
 
 # ── Synthesis ─────────────────────────────────────────────────────
 
-def synthesize(project_id: str, text: str, language: str = "en") -> dict:
+def synthesize(
+    project_id: str,
+    text: str,
+    language: str = "en",
+    *,
+    speed: float = 1.0,
+    temperature: float = 0.75,
+    length_penalty: float = 1.0,
+    repetition_penalty: float = 5.0,
+) -> dict:
     """
     Generate speech using the project's reference clip.
+    Pace/delivery knobs (speed, temperature, ...) default to natural values.
     Returns: {output (file path), reference_clip, language}
     """
     return _post(
         f"/projects/{project_id}/synthesize",
-        json={"text": text, "language": language},
+        json={
+            "text": text,
+            "language": language,
+            "speed": speed,
+            "temperature": temperature,
+            "length_penalty": length_penalty,
+            "repetition_penalty": repetition_penalty,
+        },
         timeout=SYNTH_TIMEOUT,
     )
 
@@ -197,13 +214,30 @@ def cancel_job(job_id: str) -> dict:
     return _post(f"/jobs/{job_id}/cancel")
 
 
-def synthesize_profile(project_id: str, text: str, language: str = "en") -> dict:
+def synthesize_profile(
+    project_id: str,
+    text: str,
+    language: str = "en",
+    *,
+    speed: float = 1.0,
+    temperature: float = 0.75,
+    length_penalty: float = 1.0,
+    repetition_penalty: float = 5.0,
+) -> dict:
     """
     Generate speech using the fine-tuned Voice Profile checkpoint.
     Returns: {output, mode, checkpoint, language}
     """
     return _post(
         f"/projects/{project_id}/synthesize",
-        json={"text": text, "language": language, "profile": True},
+        json={
+            "text": text,
+            "language": language,
+            "profile": True,
+            "speed": speed,
+            "temperature": temperature,
+            "length_penalty": length_penalty,
+            "repetition_penalty": repetition_penalty,
+        },
         timeout=SYNTH_TIMEOUT,
     )

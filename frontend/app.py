@@ -219,7 +219,14 @@ def on_preprocess(project_id: str | None):
     yield "⚠️ Preprocessing is taking longer than expected. Try again."
 
 
-def on_synthesize(text: str, project_id: str | None, clip_id: str | None, language: str | None):
+def on_synthesize(
+    text: str,
+    project_id: str | None,
+    clip_id: str | None,
+    language: str | None,
+    speed: float = 1.0,
+    temperature: float = 0.75,
+):
     text = (text or "").strip()
     if not text:
         return None, "Type some text to generate speech."
@@ -229,7 +236,10 @@ def on_synthesize(text: str, project_id: str | None, clip_id: str | None, langua
         return None, "Record a voice sample on the Record tab first."
     lang_code = _LANG_LABEL_TO_CODE.get(language or "English", "en")
     try:
-        result = client.synthesize(project_id, text, language=lang_code)
+        result = client.synthesize(
+            project_id, text, language=lang_code,
+            speed=speed, temperature=temperature,
+        )
     except client.BackendError as e:
         return None, f"⚠️ {e}"
     return result["output"], "🔊 Done — hit play."
@@ -657,6 +667,24 @@ def build_app() -> gr.Blocks:
                     placeholder="Type something for me to say...",
                     lines=3,
                 )
+                with gr.Accordion("Voice pacing (advanced)", open=False):
+                    gr.Markdown(
+                        "<small>The voice engine doesn't copy speaking speed "
+                        "from your recording — tune it here if the pace feels "
+                        "off. Slower + a touch more expression usually sounds "
+                        "most natural.</small>"
+                    )
+                    speed_in = gr.Slider(
+                        minimum=0.5, maximum=2.0, value=1.0, step=0.05,
+                        label="Speaking speed",
+                        info="Below 1 = slower, above 1 = faster.",
+                    )
+                    temperature_in = gr.Slider(
+                        minimum=0.1, maximum=1.0, value=0.75, step=0.05,
+                        label="Expression",
+                        info="Low = steady and even. High = more natural rhythm "
+                             "(slight glitch risk).",
+                    )
                 gen_btn = gr.Button("Generate", variant="primary")
                 synth_status = gr.Markdown("")
                 audio_out = gr.Audio(label="Output", type="filepath", interactive=False)
@@ -782,7 +810,7 @@ def build_app() -> gr.Blocks:
         # Quick Clone: generate
         gen_btn.click(
             fn=on_synthesize,
-            inputs=[text_in, project_id, last_clip_id, language_in],
+            inputs=[text_in, project_id, last_clip_id, language_in, speed_in, temperature_in],
             outputs=[audio_out, synth_status],
         )
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 import soundfile as sf
@@ -9,6 +10,40 @@ from backend.core.settings import TTS_MODEL_NAME
 from backend.core.settings import runtime_config
 
 tts_model = None
+
+
+# ── Synthesis tuning parameters ───────────────────────────────────────────
+# These control pace and delivery. XTTS does NOT copy speaking rate from the
+# reference clip — rhythm is generated each call and governed by these knobs:
+#
+#   speed              0.5–2.0  global time-stretch. <1 slows, >1 speeds up.
+#   temperature        0.1–1.0  delivery variation. Low = flat/robotic/even,
+#                               high = natural rhythm but glitch risk.
+#   length_penalty     >0       higher = terser/clipped, lower = drawn out.
+#   repetition_penalty 1.0–15.0 stops repeated syllables/vowels. XTTS needs
+#                               a high value (default 5.0 here).
+#
+# Defaults are tuned to feel natural without glitching. The "too rushed /
+# too robotic" fix is usually speed≈0.92 + temperature≈0.8.
+@dataclass
+class SynthesisParams:
+    speed: float = 1.0
+    temperature: float = 0.75
+    length_penalty: float = 1.0
+    repetition_penalty: float = 5.0
+    top_k: int = 50
+    top_p: float = 0.85
+
+    def as_kwargs(self) -> dict:
+        """The subset XTTS's tts_to_file / inference accept as kwargs."""
+        return {
+            "speed": self.speed,
+            "temperature": self.temperature,
+            "length_penalty": self.length_penalty,
+            "repetition_penalty": self.repetition_penalty,
+            "top_k": self.top_k,
+            "top_p": self.top_p,
+        }
 
 
 # ── XTTS token-limit helpers ──────────────────────────────────────────────
@@ -127,11 +162,15 @@ def _synth_chunks(
     speaker_wav: str | None = None,
     speaker: str | None = None,
     language: str = "en",
+    params: SynthesisParams | None = None,
 ) -> None:
     """
     Synthesise one or more text chunks and write the result to output_file.
     Single chunks are written directly; multiple chunks are concatenated.
+    `params` carries speed / temperature / penalties; defaults if None.
     """
+    tuning = (params or SynthesisParams()).as_kwargs()
+
     if len(chunks) == 1:
         model.tts_to_file(
             text=chunks[0],
@@ -140,6 +179,7 @@ def _synth_chunks(
             language=language,
             file_path=str(output_file),
             split_sentences=False,   # we already split
+            **tuning,
         )
         return
 
@@ -156,6 +196,7 @@ def _synth_chunks(
                 language=language,
                 file_path=str(tmp_path),
                 split_sentences=False,
+                **tuning,
             )
             audio, file_sr = sf.read(str(tmp_path))
             segments.append(audio)
@@ -220,7 +261,8 @@ def generate_speech(
     output_path: str,
     speaker_wav: str | None = None,
     speaker: str | None = None,
-    language: str = "en"
+    language: str = "en",
+    params: SynthesisParams | None = None,
 ) -> str:
     """
     Generate speech from text using XTTS v2.
@@ -235,6 +277,8 @@ def generate_speech(
         speaker_wav:  Path to reference audio for voice cloning (preferred).
         speaker:      Built-in speaker name (fallback when no reference audio).
         language:     BCP-47 language code, defaults to 'en'.
+        params:       Synthesis tuning (speed, temperature, penalties).
+                      Defaults to SynthesisParams() if None.
 
     Returns:
         Absolute path to the generated .wav file.
@@ -242,6 +286,7 @@ def generate_speech(
     Raises:
         ValueError: If synthesis fails for any reason.
     """
+    params = params or SynthesisParams()
     try:
         model = load_model()
 
@@ -278,6 +323,7 @@ def generate_speech(
                 model, chunks, output_file,
                 speaker_wav=str(ref),
                 language=language,
+                params=params,
             )
 
         else:
@@ -301,6 +347,7 @@ def generate_speech(
                 model, chunks, output_file,
                 speaker=selected,
                 language=selected_language,
+                params=params,
             )
 
         logger.info(f"Speech generated successfully: {output_file}")
@@ -320,6 +367,7 @@ def generate_speech_from_checkpoint(
     config_path: str,
     speaker_wav: str,
     language: str = "en",
+    params: SynthesisParams | None = None,
 ) -> str:
     """
     Generate speech using a fine-tuned Voice Profile checkpoint.
@@ -383,11 +431,18 @@ def generate_speech_from_checkpoint(
         )
 
         # Inference.
+        params = params or SynthesisParams()
         out_dict = model.inference(
             text=text,
             language=language,
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
+            temperature=params.temperature,
+            length_penalty=params.length_penalty,
+            repetition_penalty=params.repetition_penalty,
+            top_k=params.top_k,
+            top_p=params.top_p,
+            speed=params.speed,
         )
 
         import soundfile as sf
