@@ -578,16 +578,14 @@ def run_training(
 
     # ── 4. Load samples first so we can size the schedule ────────
     # We need to know how many training samples there are before we can
-    # convert `target_steps` (the source of truth) into `epochs` (what
-    # Coqui's Trainer expects). Tiny datasets need many more epochs to
-    # accumulate enough optimizer steps for the GPT head to actually
-    # learn — 6 epochs on 28 clips with batch 2 + accum 4 is only ~24
-    # weight updates, which is nowhere near convergence.
+    # convert `target_steps` (the source of truth) into `epochs`.
+    # eval_split=True lets Coqui load the meta_file_val eval CSV when present;
+    # if there's no eval CSV it carves a small split off train.
     train_samples, eval_samples = load_tts_samples(
         [dataset_config],
-        eval_split=False,                 # builder already produced an eval csv
+        eval_split=eval_csv.exists(),
         eval_split_max_size=256,
-        eval_split_size=0.0,
+        eval_split_size=0.1,
     )
     if not train_samples:
         return TrainingResult(
@@ -595,6 +593,29 @@ def run_training(
             project_id=project_id,
             error="Dataset is empty after loading. Rebuild the dataset.",
         )
+
+    # Minimum-clip guard. XTTS fine-tuning needs a meaningful number of
+    # clips — too few and the GPT head overfits to a couple of utterances,
+    # producing a voice that only says those exact phrases well and garbles
+    # everything else. We refuse below a floor rather than train something
+    # broken. (The Voice Profile UX targets ~30 clips.)
+    MIN_TRAIN_CLIPS = 5
+    if len(train_samples) < MIN_TRAIN_CLIPS:
+        return TrainingResult(
+            success=False,
+            project_id=project_id,
+            error=(
+                f"Only {len(train_samples)} usable clip"
+                f"{'s' if len(train_samples) != 1 else ''} found — "
+                f"Voice Profile training needs at least {MIN_TRAIN_CLIPS}. "
+                f"Record more clips (aim for ~30) and try again."
+            ),
+        )
+
+    # Whether we have a real eval set. If the builder didn't produce one
+    # (tiny dataset), disable eval so the trainer doesn't crash trying to
+    # evaluate against zero samples.
+    have_eval = eval_csv.exists() and bool(eval_samples)
 
     # Coqui's loader yields one optimizer micro-batch per `batch_size`
     # samples. With grad accumulation, true weight updates = micro_batches
@@ -639,7 +660,7 @@ def run_training(
         lr_scheduler_params={"milestones": [50000 * 18, 150000 * 18, 300000 * 18], "gamma": 0.5, "last_epoch": -1},
         # Scheduling — epochs derived from target_steps, see above
         epochs=epochs,
-        run_eval=plan.run_eval,
+        run_eval=plan.run_eval and have_eval,
         run_eval_steps=plan.eval_step,
         # Mixed precision (fp16/bf16)
         mixed_precision=plan.mixed_precision,
