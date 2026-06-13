@@ -331,8 +331,10 @@ def on_open_voice_profile(project_id: str | None):
     data_summary = plan.get("data_summary", "")
     disclosure_md = (
         f"## Set up your Voice Profile\n\n"
-        f"You'll record **{VOICE_PROFILE_CLIPS} short clips** "
-        f"(each 3–15 seconds) reading the prompts shown.\n\n"
+        f"You'll record **{VOICE_PROFILE_CLIPS} clips** of natural speech. "
+        f"Each recording can be up to 90 seconds — we extract the usable "
+        f"speech segments automatically, so one long take can fill many "
+        f"clip slots at once.\n\n"
         f"---\n\n"
         f"**What happens next:**\n\n"
         f"{summary}\n\n"
@@ -375,21 +377,111 @@ def on_profile_recording(
     clip_index: int,
 ):
     """
-    Voice Profile recording: upload + validate one clip, then advance prompt.
-    Returns (feedback_md, new_clip_index, prompt_display, progress_label,
-             profile_clip_ids state).
+    Voice Profile recording handler.
+
+    Two paths depending on audio length:
+      ≤ 15 s  → single-clip upload + validate (fast, synchronous)
+      > 15 s  → import pipeline: silence-boundary extraction, returns
+                multiple 3–15 s clips. One long recording can fill many
+                prompt slots at once.
+
+    Progress jumps by the number of clips extracted, so a 90-second
+    recording might jump from clip 3 to clip 12 in one shot.
     """
     if not audio_path:
         prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else "Speak now."
-        return f"Hit record and read the prompt.", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", []
+        return f"Hit record and read the prompt.", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", 0
     if not project_id:
-        return "Create a project first.", clip_index, "", "", []
+        return "Create a project first.", clip_index, "", "", 0
 
+    # Check file duration to decide which path to take.
+    try:
+        import soundfile as sf
+        info = sf.info(audio_path)
+        duration_s = info.duration
+    except Exception:
+        duration_s = 0.0
+
+    if duration_s > 15.0:
+        # ── Long recording path: import pipeline ──────────────────
+        # The backend splits it at silence boundaries into 3–15 s clips.
+        # We poll until done, then advance the counter by however many
+        # clips were extracted.
+        try:
+            job = client.import_recording(project_id, audio_path)
+        except client.BackendError as e:
+            prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
+            return f"❌ Upload failed: {e}", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", 0
+
+        # Poll — this is synchronous inside a Gradio event handler,
+        # so we block until complete (import of a 90s file takes ~5 s).
+        import time
+        for _ in range(120):
+            time.sleep(1)
+            try:
+                status = client.get_job(job["job_id"])
+            except client.BackendError:
+                continue
+
+            if status.get("status") == "completed":
+                result = status.get("result") or {}
+                kept = result.get("segments_kept", 0)
+                found = result.get("segments_found", 0)
+
+                if kept == 0:
+                    prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
+                    return (
+                        "⚠️ No clear speech found in that recording. "
+                        "Try speaking a bit louder or closer to the mic.",
+                        clip_index,
+                        f"> *{prompt}*",
+                        f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}",
+                        0,
+                    )
+
+                new_index = min(clip_index + kept, VOICE_PROFILE_CLIPS)
+                if new_index >= VOICE_PROFILE_CLIPS:
+                    return (
+                        f"✅ Extracted {kept} clip{'s' if kept != 1 else ''} "
+                        f"from {duration_s:.0f}s recording.\n\n"
+                        f"🎉 All {VOICE_PROFILE_CLIPS} clips recorded! "
+                        f"Go to the **Review** tab.",
+                        new_index,
+                        "",
+                        f"Done — {VOICE_PROFILE_CLIPS} of {VOICE_PROFILE_CLIPS}",
+                        kept,
+                    )
+
+                next_prompt = prompts[new_index] if new_index < len(prompts) else "Speak clearly."
+                return (
+                    f"✅ Extracted **{kept} clip{'s' if kept != 1 else ''}** "
+                    f"from {duration_s:.0f}s recording "
+                    f"({found} speech regions found).",
+                    new_index,
+                    f"> *{next_prompt}*",
+                    f"Clip {new_index+1} of {VOICE_PROFILE_CLIPS}",
+                    kept,
+                )
+
+            if status.get("status") == "failed":
+                prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
+                return (
+                    f"⚠️ Couldn't process that recording: {status.get('error', 'unknown error')}",
+                    clip_index,
+                    f"> *{prompt}*",
+                    f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}",
+                    0,
+                )
+
+        prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
+        return "⚠️ Processing timed out. Try a shorter recording.", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", 0
+
+    # ── Short recording path: single-clip upload ──────────────────
     try:
         result = client.upload_clip(project_id, audio_path)
     except client.BackendError as e:
         prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
-        return f"❌ Upload failed: {e}", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", []
+        return f"❌ Upload failed: {e}", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", 0
 
     if not result["valid"]:
         error_text = " ".join(result.get("errors", ["Try again."]))
@@ -399,25 +491,19 @@ def on_profile_recording(
             clip_index,
             f"> *{prompt}*",
             f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}",
-            [],
+            0,
         )
 
-    # Good clip — advance
     new_index = clip_index + 1
-    clip_id = result["clip_id"]
-    feedback = (
-        f"✅ Clip {clip_index+1} saved "
-        f"({result['duration_s']:.1f}s)"
-    )
+    feedback = f"✅ Clip {clip_index+1} saved ({result['duration_s']:.1f}s)"
     if new_index >= VOICE_PROFILE_CLIPS:
-        # All clips recorded
         return (
             f"{feedback}\n\n🎉 All {VOICE_PROFILE_CLIPS} clips recorded! "
-            f"Go to the **Review** tab to check them.",
+            f"Go to the **Review** tab.",
             new_index,
             "",
             f"Done — {VOICE_PROFILE_CLIPS} of {VOICE_PROFILE_CLIPS}",
-            [clip_id],
+            1,
         )
 
     next_prompt = prompts[new_index] if new_index < len(prompts) else "Speak clearly."
@@ -426,7 +512,7 @@ def on_profile_recording(
         new_index,
         f"> *{next_prompt}*",
         f"Clip {new_index+1} of {VOICE_PROFILE_CLIPS}",
-        [clip_id],
+        1,
     )
 
 
@@ -733,10 +819,15 @@ def build_app() -> gr.Blocks:
                 profile_progress_label = gr.Markdown(f"Clip 1 of {VOICE_PROFILE_CLIPS}")
                 prompt_display = gr.Markdown("")
 
+                gr.Markdown(
+                    "<small>Read the prompt aloud, clearly, at natural pace. "
+                    "You can record **up to 90 seconds** — we'll automatically "
+                    "extract the usable speech clips from it.</small>"
+                )
                 profile_mic = gr.Audio(
                     sources=["microphone", "upload"],
                     type="filepath",
-                    label="Recording",
+                    label="Recording (3 s – 90 s)",
                     waveform_options=gr.WaveformOptions(show_recording_waveform=True),
                 )
                 profile_clip_feedback = gr.Markdown("")
