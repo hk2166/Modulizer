@@ -209,7 +209,7 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 
 ### Bundling
 
-- [ ] **(P1)** Decide bundling: Tauri shell + sidecar Python backend (PyInstaller or shiv)
+- [x] **(P1)** Decide bundling: Tauri shell + sidecar Python backend (PyInstaller or shiv)
 - [ ] **(P1)** Package Python runtime + deps as sidecar binary
 - [ ] **(P2)** **Strip dev-only deps** before bundle (current `requirements-lock.txt` has ROS 2 noise — needs clean regen)
 - [ ] **(P2)** Bundle FFmpeg statically (or drop it — librosa pipeline doesn't need it)

@@ -331,10 +331,10 @@ def on_open_voice_profile(project_id: str | None):
     data_summary = plan.get("data_summary", "")
     disclosure_md = (
         f"## Set up your Voice Profile\n\n"
-        f"You'll record **{VOICE_PROFILE_CLIPS} clips** of natural speech. "
-        f"Each recording can be up to 90 seconds — we extract the usable "
-        f"speech segments automatically, so one long take can fill many "
-        f"clip slots at once.\n\n"
+        f"Provide a clean voice recording and we'll crop it into up to "
+        f"**{VOICE_PROFILE_CLIPS} usable clips** automatically. You can record "
+        f"short prompts, upload one long take, or import a video/audio file; "
+        f"the app extracts the speech parts that work for training.\n\n"
         f"---\n\n"
         f"**What happens next:**\n\n"
         f"{summary}\n\n"
@@ -380,10 +380,10 @@ def on_profile_recording(
     Voice Profile recording handler.
 
     Two paths depending on audio length:
-      ≤ 15 s  → single-clip upload + validate (fast, synchronous)
-      > 15 s  → import pipeline: silence-boundary extraction, returns
-                multiple 3–15 s clips. One long recording can fill many
-                prompt slots at once.
+      3–15 s  → single-clip upload + validate (fast, synchronous)
+      other   → import pipeline: silence-boundary extraction plus fallback
+                cropping, returning multiple training-sized clips when
+                possible. One long recording can fill many clip slots at once.
 
     Progress jumps by the number of clips extracted, so a 90-second
     recording might jump from clip 3 to clip 12 in one shot.
@@ -403,7 +403,7 @@ def on_profile_recording(
         duration_s = 0.0
 
     if duration_s > 15.0:
-        # ── Long recording path: import pipeline ──────────────────
+        # ── Source recording path: import pipeline ────────────────
         # The backend splits it at silence boundaries into 3–15 s clips.
         # We poll until done, then advance the counter by however many
         # clips were extracted.
@@ -416,7 +416,7 @@ def on_profile_recording(
         # Poll — this is synchronous inside a Gradio event handler,
         # so we block until complete (import of a 90s file takes ~5 s).
         import time
-        for _ in range(120):
+        for _ in range(600):
             time.sleep(1)
             try:
                 status = client.get_job(job["job_id"])
@@ -474,7 +474,7 @@ def on_profile_recording(
                 )
 
         prompt = prompts[clip_index] if prompts and clip_index < len(prompts) else ""
-        return "⚠️ Processing timed out. Try a shorter recording.", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", 0
+        return "⚠️ Processing timed out. Try a shorter recording or video file.", clip_index, f"> *{prompt}*", f"Clip {clip_index+1} of {VOICE_PROFILE_CLIPS}", 0
 
     # ── Short recording path: single-clip upload ──────────────────
     try:
@@ -777,8 +777,9 @@ def build_app() -> gr.Blocks:
 
             with gr.Tab("Voice Profile ✨"):
                 gr.Markdown(
-                    "Record 30 clips to train a higher-quality Voice Profile. "
-                    "Requires a GPU with at least 4 GB memory."
+                    "Upload or record voice audio and we'll crop usable clips "
+                    "for a higher-quality Voice Profile. Requires a GPU with "
+                    "at least 4 GB memory."
                 )
                 profile_lang_in = gr.Radio(
                     choices=LANGUAGE_CHOICES,
@@ -820,14 +821,14 @@ def build_app() -> gr.Blocks:
                 prompt_display = gr.Markdown("")
 
                 gr.Markdown(
-                    "<small>Read the prompt aloud, clearly, at natural pace. "
-                    "You can record **up to 90 seconds** — we'll automatically "
-                    "extract the usable speech clips from it.</small>"
+                    "<small>Read the prompt aloud, or upload a longer clean "
+                    "recording. We'll automatically crop usable speech clips "
+                    "from it for training.</small>"
                 )
                 profile_mic = gr.Audio(
                     sources=["microphone", "upload"],
                     type="filepath",
-                    label="Recording (3 s – 90 s)",
+                    label="Voice audio",
                     waveform_options=gr.WaveformOptions(show_recording_waveform=True),
                 )
                 profile_clip_feedback = gr.Markdown("")

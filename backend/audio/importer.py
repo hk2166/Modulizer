@@ -62,9 +62,10 @@ KEY CONCEPTS
 
 WHAT WE DELIBERATELY DO **NOT** DO
 ──────────────────────────────────
-• We do not pad or trim clips to a target length. The model handles
-  variable lengths fine; forcing a uniform length destroys the very
-  silence-boundary alignment that makes this approach work.
+• We prefer natural speech boundaries, but when a long take has no clear
+  pauses we fall back to fixed 10-second windows. That is less perfect than
+  silence-boundary splitting, but it lets Voice Profile accept a large
+  continuous recording and still crop usable training clips automatically.
 • We do not run a neural VAD here (silero-vad, webrtc-vad). Energy-based
   detection on the cleaned ffmpeg output is good enough for our SNR
   range and avoids pulling in an extra model + torch hub call.
@@ -113,6 +114,7 @@ DROP_TINY_BURST_MS = 150      # Drop micro-fragments below this length
 # interior pause to split at. We never chop at a fixed offset.
 INNER_SPLIT_TOP_DB = 25       # Stricter than SILENCE_TOP_DB → finds even
                               # subtle within-sentence pauses
+FALLBACK_WINDOW_S = 10.0      # Used only when no usable silence boundary exists
 
 
 @dataclass
@@ -390,6 +392,32 @@ def _segments_to_clips(
         e = min(len(samples), end + pad_n_edge)
         return samples[s:e].astype(np.float32, copy=False)
 
+    def _fallback_windows(start: int, end: int) -> list[np.ndarray]:
+        """
+        Crop a long continuous region into usable windows.
+
+        Natural silence boundaries are still preferred. This path exists for
+        monologues, songs, and noisy files where silence detection returns one
+        oversized blob. It keeps Voice Profile from rejecting otherwise useful
+        audio just because the speaker did not pause often enough.
+        """
+        region_n = end - start
+        if region_n < min_n:
+            return []
+        if region_n <= max_n:
+            return [_slice_with_pad(start, end)]
+
+        window_n = min(int(FALLBACK_WINDOW_S * sr), max_n)
+        window_n = max(window_n, min_n)
+        fallback: list[np.ndarray] = []
+        cursor = start
+        while cursor + min_n <= end:
+            clip_end = min(cursor + window_n, end)
+            if clip_end - cursor >= min_n:
+                fallback.append(_slice_with_pad(cursor, clip_end))
+            cursor += window_n
+        return fallback
+
     # ── Case (c) accumulator ──────────────────────────────────────
     # Track the *spanning window* (first burst start → last burst end)
     # so when we flush we can pull one contiguous slice. That preserves
@@ -431,11 +459,18 @@ def _segments_to_clips(
                 hop_length=512,
             )
 
+            before_count = len(clips)
             sub_start: int | None = None
             sub_end: int | None = None
             for s_i, e_i in inner:
                 abs_s = start + int(s_i)
                 abs_e = start + int(e_i)
+                if (abs_e - abs_s) > max_n:
+                    if sub_start is not None and sub_end is not None:
+                        clips.extend(_fallback_windows(sub_start, sub_end))
+                        sub_start, sub_end = None, None
+                    clips.extend(_fallback_windows(abs_s, abs_e))
+                    continue
                 if sub_start is None:
                     sub_start, sub_end = abs_s, abs_e
                     continue
@@ -449,7 +484,9 @@ def _segments_to_clips(
                     sub_end = abs_e
             # Trailing flush for the final sub-window.
             if sub_start is not None and sub_end is not None and (sub_end - sub_start) >= min_n:
-                clips.append(_slice_with_pad(sub_start, sub_end))
+                clips.extend(_fallback_windows(sub_start, sub_end))
+            if len(clips) == before_count:
+                clips.extend(_fallback_windows(start, end))
             continue
 
         # ── Case (c): short burst, accumulate ─────────────────────
