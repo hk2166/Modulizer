@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoiceForge</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="status" aria-live="polite">
+        <div class="mark" id="statusMark"></div>
+        <p id="statusText">Starting up...</p>
+      </section>
+      <section class="workspace" id="workspace" hidden>
+        <header>
+          <p class="eyebrow">VoiceForge</p>
+          <h1>Quick Clone</h1>
+        </header>
+        <label>
+          Text to speak
+          <textarea id="synthesisText" rows="5">Hello from VoiceForge.</textarea>
+        </label>
+        <button id="healthButton" type="button">Check backend</button>
+        <pre id="backendDetails"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
