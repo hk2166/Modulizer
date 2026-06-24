@@ -71,6 +71,23 @@ MIN_MATCH_SCORE = 0.6              # Below this = user read wrong prompt
 WHISPER_DOWNLOAD_DIR = str(MODELS_DIR / "whisper")
 
 
+# ── VRAM headroom needed per Whisper size (GB) ────────────────────
+# Approximate total VRAM a CTranslate2 float16 model needs to load AND
+# run a beam-search transcribe without OOM-ing. Deliberately conservative
+# (includes workspace + beam-5 activations). If the GPU has less than this,
+# we transcribe on CPU instead — transcription is a one-time QA/transcript
+# pass and must never compete with XTTS training for scarce VRAM.
+_WHISPER_VRAM_NEED_GB = {
+    "tiny": 1.0,
+    "base": 1.5,
+    "small": 3.0,
+    "medium": 5.0,
+    "large": 10.0,
+    "large-v2": 10.0,
+    "large-v3": 10.0,
+}
+
+
 # ── Model singletons (one per size) ───────────────────────────────
 # Keyed by Whisper size, not language — both 'en' and any other 'base'
 # language share a single loaded model. Saves memory in the common case.
@@ -82,6 +99,43 @@ def _whisper_size_for_language(language: str) -> str:
     return WHISPER_SIZE_BY_LANG.get(language, WHISPER_DEFAULT_SIZE)
 
 
+def _pick_whisper_device(size: str) -> tuple[str, str]:
+    """
+    Choose (device, compute_type) for a given Whisper size.
+
+    Use the GPU only when it has enough VRAM to hold the model with room to
+    run; otherwise fall back to CPU int8. A 4 GB card, for instance, can't
+    fit 'medium' in float16 — trying anyway OOMs on every clip.
+    """
+    if runtime_config.cuda_available:
+        need = _WHISPER_VRAM_NEED_GB.get(size, 5.0)
+        if runtime_config.vram_gb >= need:
+            return "cuda", "float16"
+        logger.info(
+            f"Whisper {size} needs ~{need:.0f} GB VRAM but only "
+            f"{runtime_config.vram_gb:.1f} GB available — transcribing on CPU "
+            f"to keep the GPU free for training."
+        )
+    return "cpu", "int8"
+
+
+def _load_whisper(size: str, device: str, compute_type: str) -> WhisperModel | None:
+    """Try to construct a WhisperModel. Returns None on failure (e.g. OOM)."""
+    logger.info(f"Loading Whisper {size} on {device} ({compute_type})")
+    try:
+        model = WhisperModel(
+            size,
+            device=device,
+            compute_type=compute_type,
+            download_root=WHISPER_DOWNLOAD_DIR,
+        )
+        logger.info(f"Whisper {size} loaded on {device}")
+        return model
+    except Exception as e:
+        logger.warning(f"Whisper {size} load on {device} failed: {e}")
+        return None
+
+
 def get_whisper_model(language: str = "en") -> WhisperModel:
     """
     Load (or reuse) the Whisper model appropriate for `language`.
@@ -89,27 +143,30 @@ def get_whisper_model(language: str = "en") -> WhisperModel:
     Different languages map to different model sizes via WHISPER_SIZE_BY_LANG.
     The first call for a given size pays the load cost; subsequent calls
     return the cached instance.
+
+    Device is chosen by VRAM fit (`_pick_whisper_device`). If a GPU load
+    fails anyway (OOM, driver hiccup), we fall back to CPU rather than letting
+    the failure cascade into a broken, empty dataset.
     """
     size = _whisper_size_for_language(language)
 
     if size in _whisper_models:
         return _whisper_models[size]
 
-    device = "cuda" if runtime_config.cuda_available else "cpu"
-    # int8 on CPU, float16 on GPU (both faster than float32)
-    compute_type = "float16" if runtime_config.cuda_available else "int8"
+    device, compute_type = _pick_whisper_device(size)
+    model = _load_whisper(size, device, compute_type)
 
-    logger.info(
-        f"Loading Whisper {size} on {device} ({compute_type}) "
-        f"for language={language}"
-    )
-    model = WhisperModel(
-        size,
-        device=device,
-        compute_type=compute_type,
-        download_root=WHISPER_DOWNLOAD_DIR,
-    )
-    logger.info(f"Whisper {size} loaded")
+    # Belt-and-suspenders: if the GPU load failed, retry on CPU. Covers the
+    # case where VRAM looked sufficient but allocation failed at construction.
+    if model is None and device == "cuda":
+        logger.warning(f"Whisper {size} didn't fit on the GPU — retrying on CPU.")
+        model = _load_whisper(size, "cpu", "int8")
+
+    if model is None:
+        raise RuntimeError(
+            f"Couldn't load the Whisper '{size}' model on any device."
+        )
+
     _whisper_models[size] = model
     return model
 

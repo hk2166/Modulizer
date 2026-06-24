@@ -208,7 +208,7 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 - [x] **(P2)** Health-check loop on the frontend so UI shows "starting up..." until backend is ready
 
 ### Bundling
-
+    
 - [x] **(P1)** Decide bundling: Tauri shell + sidecar Python backend (PyInstaller or shiv)
 - [ ] **(P1)** Package Python runtime + deps as sidecar binary
 - [ ] **(P2)** **Strip dev-only deps** before bundle (current `requirements-lock.txt` has ROS 2 noise — needs clean regen)

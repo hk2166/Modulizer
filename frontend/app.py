@@ -574,11 +574,20 @@ def on_start_training(project_id: str | None, language: str | None):
     except client.BackendError as e:
         yield f"⚠️ {e}", "", None
         return
-    for msg, _eta, result in _poll_job(preprocess_job["job_id"], max_seconds=120):
+    done, last_msg = False, ""
+    for msg, _eta, result in _poll_job(preprocess_job["job_id"], max_seconds=300):
+        if msg:
+            last_msg = msg
         if result is not None:
+            done = True
             break
         if msg:
             yield f"🎧 {msg}", "", None
+    # Don't advance unless this step actually finished. A timeout or failure
+    # here would otherwise cascade into a confusing 422 at the train step.
+    if not done:
+        yield f"⚠️ Couldn't finish cleaning up your recordings — {last_msg or 'please try again.'}", "", None
+        return
 
     # ── Step 2: build dataset ─────────────────────────────────────
     yield "📋 Preparing your training dataset...", "", None
@@ -587,11 +596,25 @@ def on_start_training(project_id: str | None, language: str | None):
     except client.BackendError as e:
         yield f"⚠️ {e}", "", None
         return
-    for msg, _eta, result in _poll_job(ds_job["job_id"], max_seconds=300):
+    # Generous cap: the first build for a language triggers a one-time
+    # transcriber download (Whisper "base" ~150 MB for English, "medium"
+    # ~1.5 GB for Hindi/Indic), which can take many minutes on a slow link.
+    # Giving up early here is what previously fell through to /train → 422.
+    done, last_msg = False, ""
+    for msg, _eta, result in _poll_job(ds_job["job_id"], max_seconds=1800):
+        if msg:
+            last_msg = msg
         if result is not None:
+            done = True
             break
         if msg:
             yield f"📋 {msg}", "", None
+    if not done:
+        yield (
+            "⚠️ Couldn't prepare the training dataset. "
+            f"{last_msg or 'The voice engine may still be downloading (one-time, up to ~2 GB) — wait for it to finish, then try again.'}"
+        ), "", None
+        return
 
     # ── Step 3: train ─────────────────────────────────────────────
     yield "🧠 Starting training — this will take a while...", "", None
