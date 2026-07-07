@@ -48,6 +48,13 @@ deepfilternet==0.5.6
 # cleaner encounters Latin characters inside Indic-script text.
 indic-transliteration==2.3.82
 
+# ── 8-bit Adam for low-VRAM fine-tuning ──────────────────────────────────
+# Used by the ultra-low-VRAM training preset. Quantizes optimizer momentum
+# to int8, cutting optimizer state ~4× — the lever that lets XTTS fine-tune
+# fit on a 4 GB card. Pinned to 0.45.5: newer releases dropped kernels for
+# older Turing GPUs (GTX 16-series) on CUDA 12.1.
+bitsandbytes==0.45.5
+
 # ── Frontend (Gradio MVP) ────────────────────────────────────────────────
 gradio==6.14.0
 # HTTP client used by frontend/client.py to talk to the backend.

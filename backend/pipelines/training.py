@@ -705,6 +705,21 @@ def run_training(
         language=language,
     )
 
+    # ── 8-bit Adam registration ───────────────────────────────────────────
+    # If the plan asked for AdamW8bit (ultra-low-VRAM tier), make it reachable
+    # by Coqui's GPTTrainer.get_optimizer, which resolves optimizer names via
+    # getattr(torch.optim, name). We inject bitsandbytes' AdamW8bit onto the
+    # torch.optim module so that lookup finds it. If bitsandbytes isn't
+    # available, fall back to plain AdamW (will likely OOM on 4 GB, but that's
+    # a clearer failure than an ImportError deep in the trainer).
+    if plan.optimizer == "AdamW8bit":
+        if not _register_adamw8bit():
+            logger.warning(
+                "training: bitsandbytes unavailable — falling back to AdamW. "
+                "This may OOM on low-VRAM cards."
+            )
+            config.optimizer = "AdamW"
+
     # ── Crash-safe resume: use an existing checkpoint if one exists ────────
     # If training was previously interrupted, continue from the last saved
     # checkpoint rather than starting over. Coqui's Trainer reads restore_path
@@ -741,17 +756,31 @@ def run_training(
         logger.info(f"training: stopped (cancelled={cancelled})")
     except Exception as e:
         logger.exception(f"training: trainer.fit() failed: {e}")
+        # Release VRAM before returning — otherwise the failed run's tensors
+        # keep the GPU full and the next attempt (or Quick Clone) OOMs.
+        _oom = "out of memory" in str(e).lower()
+        del trainer, model
+        _free_cuda_memory()
         return TrainingResult(
             success=False,
             project_id=project_id,
             output_dir=str(output_dir),
-            error=f"Training stopped because of an error: {e}",
-            epochs_run=getattr(trainer, "epochs_done", 0),
-            total_steps=getattr(trainer, "total_steps_done", 0),
+            error=(
+                "Ran out of GPU memory. This graphics card is below the "
+                "memory needed to train a Voice Profile — try Quick Clone "
+                "instead, which works on any hardware."
+                if _oom
+                else f"Training stopped because of an error: {e}"
+            ),
         )
 
     # ── 7. Locate checkpoints + return ────────────────────────────
     best, last = _find_checkpoints(Path(trainer.output_path))
+
+    # Release VRAM now that training is done — the model + optimizer are no
+    # longer needed and would otherwise sit on the GPU until GC.
+    del trainer, model
+    _free_cuda_memory()
 
     if cancelled:
         # Treat cancellation as success — we have a usable checkpoint.
@@ -926,6 +955,53 @@ def _synthesize_validation_sample(
     except Exception as e:
         logger.warning(f"_synthesize_validation_sample: failed (epoch {epoch}): {e}")
         return None
+
+
+def _register_adamw8bit() -> bool:
+    """
+    Make bitsandbytes' AdamW8bit reachable via getattr(torch.optim, "AdamW8bit").
+
+    Coqui's GPTTrainer.get_optimizer resolves the optimizer name against the
+    torch.optim module. torch has no AdamW8bit, so we attach bitsandbytes'
+    implementation as an attribute. Idempotent — safe to call repeatedly.
+
+    Returns True if AdamW8bit is now available, False if bitsandbytes couldn't
+    be imported (caller should fall back to plain AdamW).
+    """
+    import torch
+    if hasattr(torch.optim, "AdamW8bit"):
+        return True
+    try:
+        import bitsandbytes as bnb
+        torch.optim.AdamW8bit = bnb.optim.AdamW8bit
+        logger.info("training: registered bitsandbytes AdamW8bit optimizer")
+        return True
+    except Exception as e:
+        logger.warning(f"training: couldn't load bitsandbytes AdamW8bit: {e}")
+        return False
+
+
+def _free_cuda_memory() -> None:
+    """
+    Release cached CUDA memory back to the driver.
+
+    Training runs in the same process as the API server (FastAPI
+    BackgroundTask). When a run ends — success, cancel, or crash — the CUDA
+    allocator holds onto freed blocks as cache, and the model/optimizer
+    tensors may linger until GC. On a 4 GB card that means the *next* action
+    (another train attempt, or even Quick Clone inference) sees a full GPU
+    and OOMs. We force a collect + empty_cache so the VRAM is actually
+    returned. Cheap and safe to call unconditionally.
+    """
+    try:
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception as e:
+        logger.warning(f"training: CUDA cleanup failed: {e}")
 
 
 def _find_checkpoints(run_dir: Path) -> tuple[Path | None, Path | None]:

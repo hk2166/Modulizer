@@ -505,8 +505,13 @@ def _ultra_low_vram_plan(vram_gb: float, train_clip_count: int = 30) -> Training
         max_wav_length=176400,        # ~8s at 22.05kHz (was ~11.6s)
         max_text_length=120,          # was 200
         batch_group_size=4,           # was 48
-        optimizer="AdamW",            # Coqui's GPTTrainer resolves via torch.optim;
-                                      # Adafactor isn't in torch.optim so we keep AdamW
+        # 8-bit Adam: quantizes optimizer momentum buffers to int8, cutting
+        # optimizer state ~4× (518M params × 2 buffers × 4B → ×1B). This is
+        # THE lever that makes XTTS fine-tuning fit on 4 GB — AdamW's fp32
+        # state alone (~4 GB) otherwise exceeds the whole card. Quality cost
+        # is negligible; only the optimizer's momentum precision changes,
+        # not the model weights or gradients. Requires bitsandbytes.
+        optimizer="AdamW8bit",
         expandable_segments=True,     # reduce allocator fragmentation
         estimated_minutes=_estimate_minutes(
             vram_gb=vram_gb,
