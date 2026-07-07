@@ -570,6 +570,22 @@ def run_training(
             )
             logger.info("training: set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
 
+        # cuBLAS normally pre-allocates a ~256 MB workspace on first backward
+        # pass. On a 4 GB card that's enough to push it over the edge even
+        # when everything else fits. CUBLAS_WORKSPACE_CONFIG=:0:8 caps the
+        # workspace at 8 MB. Modest performance hit, no correctness impact.
+        if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":0:8"
+            logger.info("training: set CUBLAS_WORKSPACE_CONFIG=:0:8 (minimal cuBLAS workspace)")
+
+        # Disable cuDNN auto-tuner benchmark mode. The benchmark pass pre-
+        # allocates algorithm buffers to find the fastest kernel for each
+        # op. On a tight card, those extra allocations push things over.
+        import torch
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True   # small speed cost, saves memory
+        logger.info("training: disabled cuDNN benchmark mode to reduce memory")
+
     model_args = GPTArgs(
         max_conditioning_length=132300,
         min_conditioning_length=66150,
