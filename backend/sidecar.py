@@ -48,6 +48,10 @@ FRONTEND_PORT = find_free_port(
 
 async def serve_backend() -> None:
     """Run the FastAPI backend and publish both backend + frontend ports."""
+    # Make the chosen frontend port visible to the backend process too, so the
+    # /frontend-url endpoint can answer (the port file is the primary source,
+    # but this keeps the HTTP fallback accurate).
+    os.environ["VOICEFORGE_FRONTEND_PORT"] = str(FRONTEND_PORT)
     clear_backend_port_file()
     config = uvicorn.Config(
         "backend.main:app",
