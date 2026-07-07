@@ -559,12 +559,23 @@ def run_training(
         dvae_sample_rate=dataset_sr,
         output_sample_rate=24000,
     )
+    # Reduce allocator fragmentation on tight cards. Must be set before the
+    # first CUDA allocation to take effect; setting it here is safe because
+    # the heavy torch/CUDA work happens below in trainer.fit().
+    if plan.expandable_segments:
+        prev = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+        if "expandable_segments" not in prev:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+                (prev + "," if prev else "") + "expandable_segments:True"
+            )
+            logger.info("training: set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
     model_args = GPTArgs(
         max_conditioning_length=132300,
         min_conditioning_length=66150,
         debug_loading_failures=False,
-        max_wav_length=255995,            # ≈11.6 s
-        max_text_length=200,
+        max_wav_length=plan.max_wav_length,
+        max_text_length=plan.max_text_length,
         mel_norm_file=base_files["mel_norm"],
         dvae_checkpoint=base_files["dvae"],
         xtts_checkpoint=base_files["xtts"],
@@ -640,7 +651,7 @@ def run_training(
         logger_uri=None,
         audio=audio_config,
         batch_size=plan.batch_size,
-        batch_group_size=48,
+        batch_group_size=plan.batch_group_size,
         eval_batch_size=plan.eval_batch_size,
         num_loader_workers=plan.num_loader_workers,
         eval_split_max_size=256,
@@ -651,10 +662,16 @@ def run_training(
         save_n_checkpoints=2,             # keep best + last; trim the rest
         save_checkpoints=True,
         print_eval=False,
-        # Optimizer
-        optimizer="AdamW",
-        optimizer_wd_only_on_weights=True,
-        optimizer_params={"betas": [0.9, 0.96], "eps": 1e-8, "weight_decay": 1e-2},
+        # Optimizer — AdamW is fast but keeps 2 fp32 momentum buffers per
+        # weight. On tight VRAM the plan may pick Adafactor, whose factored
+        # second moments use a fraction of the optimizer-state memory.
+        optimizer=plan.optimizer,
+        optimizer_wd_only_on_weights=(plan.optimizer == "AdamW"),
+        optimizer_params=(
+            {"betas": [0.9, 0.96], "eps": 1e-8, "weight_decay": 1e-2}
+            if plan.optimizer == "AdamW"
+            else {"weight_decay": 1e-2}
+        ),
         lr=plan.learning_rate,
         lr_scheduler="MultiStepLR",
         lr_scheduler_params={"milestones": [50000 * 18, 150000 * 18, 300000 * 18], "gamma": 0.5, "last_epoch": -1},

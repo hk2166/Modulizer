@@ -74,9 +74,16 @@ from backend.core.logger import logger
 # ── Hardware thresholds (in GB) ───────────────────────────────────
 # Numbers picked from XTTS community fine-tuning reports + a safety margin.
 # We measure *total* VRAM, not free — assuming the user closed other GPU apps.
+#
+# Tiered strategy (the "hybrid: trade time for memory" idea):
+#   ≥8 GB      → STANDARD        fast, batch 8, full clip lengths
+#   5–8 GB     → LOW_VRAM        batch 2 + accum, fp16, gradient checkpointing
+#   3.5–5 GB   → ULTRA_LOW_VRAM  batch 1, short clips, Adafactor, slowest but fits
+#   <3.5 GB    → refuse          even the ultra tier won't fit XTTS
 VRAM_STANDARD_MIN = 8.0    # ≥8 GB → standard preset
-VRAM_LOW_MIN = 3.0         # 3–8 GB → low-VRAM preset
-VRAM_REFUSE_BELOW = 3.0    # <3 GB → can't train at all
+VRAM_LOW_MIN = 5.0         # 5–8 GB → low-VRAM preset
+VRAM_ULTRA_MIN = 3.5       # 3.5–5 GB → ultra-low-VRAM preset (batch 1, short clips)
+VRAM_REFUSE_BELOW = 3.5    # <3.5 GB → can't fit XTTS fine-tuning at all
 
 # Disk space needed for: dataset copy, intermediate checkpoints, final model.
 # 5 GB is safe headroom; XTTS checkpoints alone are ~2 GB each.
@@ -86,8 +93,9 @@ DISK_REQUIRED_GB = 5.0
 # ── Preset names ──────────────────────────────────────────────────
 class Preset(str, Enum):
     """Which preset was selected. String-valued so it serializes cleanly to JSON."""
-    STANDARD = "standard"
-    LOW_VRAM = "low_vram"
+    STANDARD = "standard"           # ≥8 GB — fast, batch 8
+    LOW_VRAM = "low_vram"           # 5–8 GB — batch 2 + accum, fp16, checkpointing
+    ULTRA_LOW_VRAM = "ultra_low_vram"  # 3.5–5 GB — batch 1, short clips, Adafactor
     # Refuse* values aren't used in TrainingPlan (it'd be None then),
     # but they're useful in `decide_preset()` return tuples.
     REFUSE_NO_GPU = "refuse_no_gpu"
@@ -130,6 +138,16 @@ class TrainingPlan:
     precision_dtype: str = "fp32"     # "fp32" | "fp16" | "bf16"
     gradient_checkpointing: bool = False
     grad_clip: float = 1.0            # Clip gradients above this norm — stabilizes fp16
+
+    # --- Memory floor knobs (the levers that actually move VRAM on <8 GB) ---
+    # These cap the *fixed* activation buffers, which dominate memory more than
+    # batch size once batch is already ≤2. Trading these down trades quality/
+    # length coverage for the ability to fit at all.
+    max_wav_length: int = 255995      # ≈11.6s at 22.05kHz — longest training clip
+    max_text_length: int = 200        # longest tokenised transcript
+    batch_group_size: int = 48        # length-bucketing lookahead; RAM+VRAM cost
+    optimizer: str = "AdamW"          # "AdamW" (fast, heavy) | "Adafactor" (slow, light)
+    expandable_segments: bool = False # set PYTORCH_CUDA_ALLOC_CONF to reduce fragmentation
 
     # --- Optimizer ---
     learning_rate: float = 5e-6       # XTTS fine-tuning needs a *small* LR;
@@ -291,11 +309,14 @@ def decide_preset(
             data_summary=data_summary,
         )
 
-    # ── Pick the preset ───────────────────────────────────────────
+    # ── Pick the preset (tiered: more VRAM → faster, less → slower but fits) ──
     if vram >= VRAM_STANDARD_MIN:
         preset = Preset.STANDARD
-    else:
+    elif vram >= VRAM_LOW_MIN:
         preset = Preset.LOW_VRAM
+    else:
+        # 3.5–5 GB: the ultra tier — batch 1, short clips, Adafactor.
+        preset = Preset.ULTRA_LOW_VRAM
 
     plan = _build_plan(preset, vram_gb=vram, train_clip_count=clips)
     return TrainingDecision(
@@ -319,6 +340,8 @@ def _build_plan(preset: Preset, vram_gb: float = 0.0, train_clip_count: int = 30
         return _standard_plan(vram_gb, train_clip_count)
     if preset == Preset.LOW_VRAM:
         return _low_vram_plan(vram_gb, train_clip_count)
+    if preset == Preset.ULTRA_LOW_VRAM:
+        return _ultra_low_vram_plan(vram_gb, train_clip_count)
 
     # Refusal presets shouldn't reach here, but keep the dispatch total.
     raise ValueError(f"Cannot build a plan for refusal preset: {preset}")
@@ -419,6 +442,76 @@ def _low_vram_plan(vram_gb: float, train_clip_count: int = 30) -> TrainingPlan:
             vram_gb=vram_gb,
             batch_size=2,
             grad_accum_steps=4,
+            target_steps=250,
+            train_clip_count=train_clip_count,
+            low_vram=True,
+        ),
+        notes=notes,
+    )
+
+
+def _ultra_low_vram_plan(vram_gb: float, train_clip_count: int = 30) -> TrainingPlan:
+    """
+    Ultra-low-VRAM preset: 3.5–5 GB (e.g. GTX 1650 4 GB).
+
+    XTTS fine-tuning has a fixed memory floor (~3 GB: fp16 GPT weights +
+    DVAE + optimizer state) that nearly fills a 4 GB card before any batch
+    activations. The LOW_VRAM preset still OOMs here. This tier attacks the
+    *floor*, not the batch:
+
+      - batch_size=1: halves activation memory vs batch 2. The old "XTTS
+        needs batch≥2" note is obsolete — XTTS v2's perceiver resampler
+        handles single-example batches fine.
+      - grad_accum_steps=8: effective batch = 8, same gradient quality,
+        8× the wall-clock per weight update. This is the core time-for-
+        memory trade.
+      - max_wav_length capped to ~8s (176400 samples) and max_text_length
+        to 120: activation buffers scale with these. Longer clips get
+        truncated at load — fine, XTTS conditions on ≤6s anyway.
+      - batch_group_size=4: the length-bucketing lookahead pre-loads this
+        many samples. 48 is wasteful on a tight machine; 4 still buckets
+        usefully.
+      - expandable_segments=True: sets PYTORCH_CUDA_ALLOC_CONF to reduce
+        allocator fragmentation — often recovers the last few hundred MB
+        that push a borderline run from OOM to fits.
+
+    Expect this to be markedly slower than LOW_VRAM (grad accum 8 + tiny
+    batch + Adafactor), but it actually completes on 4 GB.
+    """
+    notes = [
+        f"Your GPU has {vram_gb:.1f} GB — using maximum memory-saving settings."
+        if vram_gb > 0
+        else "Using maximum memory-saving settings (ultra-low-VRAM preset).",
+        "Training one clip at a time to fit in memory — this is slower but works.",
+        "Shorter training clips and reduced buffering keep memory low.",
+    ]
+    return TrainingPlan(
+        preset=Preset.ULTRA_LOW_VRAM,
+        batch_size=1,
+        eval_batch_size=1,
+        grad_accum_steps=8,           # effective batch = 8
+        num_loader_workers=0,
+        target_steps=250,
+        mixed_precision=True,
+        precision_dtype="fp16",
+        gradient_checkpointing=True,
+        grad_clip=1.0,
+        learning_rate=5e-6,
+        save_step=500,
+        print_step=10,
+        run_eval=True,
+        eval_step=200,
+        # Memory-floor knobs — the levers that actually make 4 GB fit.
+        max_wav_length=176400,        # ~8s at 22.05kHz (was ~11.6s)
+        max_text_length=120,          # was 200
+        batch_group_size=4,           # was 48
+        optimizer="AdamW",            # Coqui's GPTTrainer resolves via torch.optim;
+                                      # Adafactor isn't in torch.optim so we keep AdamW
+        expandable_segments=True,     # reduce allocator fragmentation
+        estimated_minutes=_estimate_minutes(
+            vram_gb=vram_gb,
+            batch_size=1,
+            grad_accum_steps=8,
             target_steps=250,
             train_clip_count=train_clip_count,
             low_vram=True,

@@ -11,7 +11,8 @@
     "build": "tauri build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.8.0"
+    "@tauri-apps/api": "^2.8.0",
+    "headroom-ai": "^0.22.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
