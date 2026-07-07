@@ -38,10 +38,11 @@ impl BackendChild {
 #[derive(Deserialize)]
 struct PortFile {
     base_url: String,
+    #[serde(default)]
+    frontend_url: Option<String>,
 }
 
-#[tauri::command]
-fn backend_url(state: State<'_, BackendState>) -> Result<String, String> {
+fn read_port_file(state: &State<'_, BackendState>) -> Result<PortFile, String> {
     let port_file = state
         .port_file
         .lock()
@@ -51,9 +52,19 @@ fn backend_url(state: State<'_, BackendState>) -> Result<String, String> {
 
     let raw = fs::read_to_string(&port_file)
         .map_err(|_| format!("Backend is still starting ({})", port_file.display()))?;
-    let parsed: PortFile =
-        serde_json::from_str(&raw).map_err(|err| format!("Invalid backend port file: {err}"))?;
-    Ok(parsed.base_url)
+    serde_json::from_str(&raw).map_err(|err| format!("Invalid backend port file: {err}"))
+}
+
+#[tauri::command]
+fn backend_url(state: State<'_, BackendState>) -> Result<String, String> {
+    Ok(read_port_file(&state)?.base_url)
+}
+
+#[tauri::command]
+fn frontend_url(state: State<'_, BackendState>) -> Result<String, String> {
+    read_port_file(&state)?
+        .frontend_url
+        .ok_or_else(|| "Frontend port not published yet".to_string())
 }
 
 fn start_backend(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -130,7 +141,7 @@ fn main() {
         .manage(BackendState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![backend_url])
+        .invoke_handler(tauri::generate_handler![backend_url, frontend_url])
         .setup(|app| {
             start_backend(app)?;
             Ok(())

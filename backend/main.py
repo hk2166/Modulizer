@@ -91,8 +91,13 @@ def models_status():
 def frontend_url():
     """
     Tell the Tauri shell where the Gradio UI is running.
-    In production the sidecar starts Gradio on port 7860.
+
+    The sidecar chooses a free port at startup and passes it here via
+    VOICEFORGE_FRONTEND_PORT. There is no fixed port — if the env var is
+    somehow missing we return null so the shell falls back to the port file.
     """
     import os
-    port = int(os.environ.get("VOICEFORGE_FRONTEND_PORT", "7860"))
+    port = os.environ.get("VOICEFORGE_FRONTEND_PORT")
+    if not port:
+        return {"url": None}
     return {"url": f"http://127.0.0.1:{port}"}

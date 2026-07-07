@@ -545,8 +545,8 @@ def render_landing_page() -> str:
   <div class="foot">
     Tip: every endpoint is also fully testable from
     <a href="/docs">/docs</a> — click "Try it out" on any of them.
-    Frontend (Gradio) runs separately on
-    <code>http://localhost:7860</code> when started with
+    Frontend (Gradio) runs separately on a free port chosen at startup
+    (see <code>/frontend-url</code>) when started with
     <code>python -m frontend.app</code>.
   </div>
 </div>

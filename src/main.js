@@ -154,22 +154,37 @@ async function startup() {
     setStatus("Checking voice engine…");
     await ensureModels(backendUrl);
 
-    // 3. Get the Gradio URL — the Gradio app runs on its own port
-    //    (default 7860). In dev mode it runs separately; in production the
-    //    sidecar starts Gradio too and we discover its port from the backend.
-    let gradioUrl;
-    try {
-      const r = await fetch(`${backendUrl}/frontend-url`, { cache: "no-store" });
-      if (r.ok) {
-        const data = await r.json();
-        gradioUrl = data.url;
+    // 3. Get the Gradio URL. Primary source is the port file (via Rust),
+    //    which the sidecar populates with a guaranteed-free frontend port.
+    //    Falls back to the backend's /frontend-url endpoint.
+    let gradioUrl = null;
+    for (let i = 0; i < 40 && !gradioUrl; i++) {
+      // 3a. Try the port file first (authoritative — no fixed port assumed)
+      try {
+        gradioUrl = await invoke("frontend_url");
+      } catch {
+        // frontend port not published yet
       }
-    } catch {
-      // fallback: Gradio default port
-      gradioUrl = backendUrl.replace(/:\d+$/, ":7860");
+      // 3b. Fall back to the backend endpoint
+      if (!gradioUrl) {
+        try {
+          const r = await fetch(`${backendUrl}/frontend-url`, { cache: "no-store" });
+          if (r.ok) {
+            const data = await r.json();
+            if (data.url) gradioUrl = data.url;
+          }
+        } catch {
+          // backend not answering that route yet
+        }
+      }
+      if (!gradioUrl) await sleep(500);
     }
 
-    // 4. Check Gradio is reachable
+    if (!gradioUrl) {
+      throw new Error("Could not determine the app URL. Try restarting.");
+    }
+
+    // 4. Wait until Gradio actually answers on that port
     setStatus("Loading app…");
     for (;;) {
       try {

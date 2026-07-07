@@ -1214,12 +1214,18 @@ def build_app() -> gr.Blocks:
 # ══════════════════════════════════════════════════════════════════
 
 def main():
+    import os
     from backend.core.settings import DATA_DIR
+
+    # Port is chosen by the sidecar (a guaranteed-free port) and passed via env.
+    # GRADIO_SERVER_PORT is also read natively by Gradio; we read it explicitly
+    # so a standalone `python -m frontend.app` still works. 0 = let Gradio pick.
+    port = int(os.environ.get("GRADIO_SERVER_PORT", "0")) or None
 
     app = build_app()
     app.launch(
         server_name="127.0.0.1",
-        server_port=7860,
+        server_port=port,
         inbrowser=False,
         theme=vf_theme.build_theme(),
         css=vf_theme.CSS,

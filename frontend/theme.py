@@ -21,8 +21,8 @@ Glows are state-tied (recording, generating, training), not decorative on
 every element, so the waveform visualizations stay the focal point.
 
 Fonts are self-hosted and base64-embedded into the CSS so they load with no
-external CDN calls — Gradio serves its own page on port 7860, so it can't
-reach the Tauri-served font files; embedding keeps everything offline.
+external CDN calls — Gradio serves its own page on a separate port, so it
+can't reach the Tauri-served font files; embedding keeps everything offline.
 """
 
 from __future__ import annotations
