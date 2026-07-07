@@ -3,7 +3,7 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, File, UploadFile, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from uuid import uuid4
 
@@ -59,6 +59,33 @@ class SynthesizeRequest(BaseModel):
 @router.post("", status_code=201)
 def post_create_project(req: CreateProjectRequest):
     return create_project(name=req.name)
+
+
+@router.get("")
+def list_all_projects():
+    """List every project in the user's data directory."""
+    import json
+    projects_dir = DATA_DIR / "projects"
+    if not projects_dir.exists():
+        return []
+    results = []
+    for project_dir in sorted(projects_dir.iterdir()):
+        metadata_path = project_dir / "metadata" / "project.json"
+        if not metadata_path.exists():
+            continue
+        try:
+            meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+            # Attach live counts same as get_project
+            raw_dir = project_dir / "raw"
+            meta["clip_count"] = len(list(raw_dir.glob("*.wav"))) if raw_dir.exists() else 0
+            processed_dir = project_dir / "processed"
+            meta["validated_count"] = len(list(processed_dir.glob("*.wav"))) if processed_dir.exists() else 0
+            has_checkpoint = any((project_dir / "checkpoints").rglob("*.pth")) if (project_dir / "checkpoints").exists() else False
+            meta["has_voice_profile"] = has_checkpoint
+            results.append(meta)
+        except Exception:
+            continue
+    return sorted(results, key=lambda p: p.get("created_at", ""), reverse=True)
 
 
 @router.get('/{project_id}')
@@ -492,6 +519,174 @@ def _run_dataset_build(
     except Exception as e:
         job_manager.fail_job(job_id, error=str(e))
 
+
+
+# ── Export / Import (M3) ──────────────────────────────────────────
+
+@router.get("/{project_id}/export")
+def export_project(project_id: str):
+    """
+    Package a project as a portable .zip file for download or migration.
+
+    What's included:
+      - metadata/project.json      — name, creation date, IDs
+      - processed/*.wav            — cleaned reference clips
+      - dataset/manifest.json      — transcripts + golden clip ID (if built)
+      - checkpoints/best_model.pth — fine-tuned voice profile (if trained)
+      - checkpoints/<run>/config.json — trainer config needed to load the checkpoint
+      - LICENSE.txt                — Coqui XTTS license notice for generated audio
+
+    What's NOT included:
+      - raw/  — large, redundant (processed/ is the cleaned version)
+      - dataset/wavs/  — large, rebuildable from processed/
+      - exports/  — generated audio, not part of the profile
+    """
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
+
+    import io
+    import zipfile
+
+    project_dir = DATA_DIR / "projects" / project_id
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # metadata
+        metadata_file = project_dir / "metadata" / "project.json"
+        if metadata_file.exists():
+            zf.write(metadata_file, "metadata/project.json")
+
+        # processed clips
+        processed_dir = project_dir / "processed"
+        if processed_dir.exists():
+            for wav in sorted(processed_dir.glob("*.wav")):
+                zf.write(wav, f"processed/{wav.name}")
+
+        # dataset manifest (transcripts + golden clip id)
+        manifest = project_dir / "dataset" / "manifest.json"
+        if manifest.exists():
+            zf.write(manifest, "dataset/manifest.json")
+
+        # best checkpoint + its config
+        checkpoints_dir = project_dir / "checkpoints"
+        if checkpoints_dir.exists():
+            best_model = None
+            best_mtime = -1.0
+            for candidate in checkpoints_dir.rglob("best_model.pth"):
+                if candidate.stat().st_mtime > best_mtime:
+                    best_mtime = candidate.stat().st_mtime
+                    best_model = candidate
+            if best_model:
+                zf.write(best_model, "checkpoints/best_model.pth")
+                config_json = best_model.parent / "config.json"
+                if config_json.exists():
+                    zf.write(config_json, "checkpoints/config.json")
+
+        # license notice
+        license_text = (
+            "VoiceForge — exported voice profile\n"
+            "=====================================\n\n"
+            f"Project: {project.get('name', project_id)}\n"
+            f"Exported: {__import__('datetime').datetime.utcnow().isoformat()}Z\n\n"
+            "This voice profile was created using XTTS v2 by Coqui AI.\n"
+            "Speech generated with this profile is subject to the Coqui\n"
+            "Public Model License (CPML). Commercial use requires compliance\n"
+            "with that license. See: https://coqui.ai/cpml\n"
+        )
+        zf.writestr("LICENSE.txt", license_text)
+
+    buf.seek(0)
+    safe_name = project.get("name", project_id).replace(" ", "_")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="voiceforge_{safe_name}.zip"'
+        },
+    )
+
+
+@router.post("/import-profile", status_code=201)
+async def import_profile(file: UploadFile = File(...)):
+    """
+    Restore a project from an exported .zip file.
+
+    Creates a new project with a fresh UUID, then extracts:
+      - processed/ clips
+      - dataset/manifest.json (preserving transcripts + golden clip ID)
+      - checkpoints/ model weights
+
+    The project's original name is read from metadata/project.json if present;
+    otherwise it's derived from the zip filename.
+    """
+    import zipfile
+    import io
+
+    raw_bytes = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=422, detail="That doesn't look like a valid VoiceForge zip.")
+
+    names = zf.namelist()
+
+    # Read original project metadata to get the name
+    original_name = Path(file.filename or "imported.zip").stem
+    if "metadata/project.json" in names:
+        try:
+            import json
+            meta = json.loads(zf.read("metadata/project.json"))
+            original_name = meta.get("name", original_name) + " (imported)"
+        except Exception:
+            pass
+
+    # Create a fresh project
+    project = create_project(name=original_name)
+    project_id = project["id"]
+    project_dir = DATA_DIR / "projects" / project_id
+
+    # Extract each recognised path into the new project
+    for name in names:
+        p = Path(name)
+        parts = p.parts
+        if not parts:
+            continue
+        top = parts[0]
+
+        dest: Path | None = None
+        if top == "processed" and name.endswith(".wav"):
+            dest = project_dir / "processed" / p.name
+        elif top == "dataset" and p.name == "manifest.json":
+            dest = project_dir / "dataset" / "manifest.json"
+        elif top == "checkpoints":
+            rel = Path(*parts[1:]) if len(parts) > 1 else Path(p.name)
+            dest = project_dir / "checkpoints" / rel
+        # skip metadata (we wrote our own) and LICENSE.txt
+
+        if dest is None:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(zf.read(name))
+
+    zf.close()
+
+    # Re-read and return the created project metadata
+    return get_project(project_id)
+
+
+@router.delete("/{project_id}", status_code=204)
+def delete_project(project_id: str):
+    """
+    Permanently delete a project and all its data (clips, checkpoints, exports).
+    """
+    import shutil
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"No project found with id: {project_id}")
+    project_dir = DATA_DIR / "projects" / project_id
+    shutil.rmtree(str(project_dir), ignore_errors=True)
+    logger.info(f"Project deleted: {project_id}")
 
 
 # ── Training (M2) ─────────────────────────────────────────────────

@@ -188,11 +188,11 @@ Goal: ship-ready product. Multi-language voices, export/import voice profiles.
 
 - [x] **(P2)** Multi-language support in UI (XTTS supports 17+) — language picker
 - [x] **(P2)** Speed/emphasis controls (sliders, not raw params)
-- [ ] **(P2)** Export flow:
-  - [ ] **(P2)** `POST /projects/{id}/export` — package profile + metadata + license note as `.zip`
-  - [ ] **(P2)** UI: "Save voice profile" button → file dialog
-  - [ ] **(P2)** Import: drop a `.zip` to restore a project
-- [ ] **(P2)** Onboarding: first-run explainer ("Here's what to expect")
+- [x] **(P2)** Export flow:
+  - [x] **(P2)** `POST /projects/{id}/export` — package profile + metadata + license note as `.zip`
+  - [x] **(P2)** UI: "Save voice profile" button → file dialog
+  - [x] **(P2)** Import: drop a `.zip` to restore a project
+- [x] **(P2)** Onboarding: first-run explainer ("Here's what to expect")
 - [ ] **(P3)** Error reporter — "Send report" button bundles last log + system profile (opt-in)
 
 ---

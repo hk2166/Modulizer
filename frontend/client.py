@@ -241,3 +241,64 @@ def synthesize_profile(
         },
         timeout=SYNTH_TIMEOUT,
     )
+
+
+# ── M3: Export / Import / List ────────────────────────────────────
+
+def list_projects() -> list[dict]:
+    """Return all projects, newest first."""
+    return _get("/projects")
+
+
+def export_project(project_id: str, dest_dir: str) -> str:
+    """
+    Download project zip to dest_dir. Returns the path to the saved file.
+    """
+    from pathlib import Path as _Path
+    try:
+        r = requests.get(
+            f"{BASE_URL}/projects/{project_id}/export",
+            timeout=60,
+            stream=True,
+        )
+    except requests.RequestException as e:
+        raise BackendError(f"Couldn't reach the app backend. Is it running? ({e})")
+    if r.status_code >= 400:
+        try:
+            detail = r.json().get("detail", r.text)
+        except ValueError:
+            detail = r.text or f"HTTP {r.status_code}"
+        raise BackendError(str(detail))
+
+    # Try to get filename from Content-Disposition
+    cd = r.headers.get("Content-Disposition", "")
+    filename = "voiceforge_profile.zip"
+    if "filename=" in cd:
+        filename = cd.split("filename=")[-1].strip('"')
+
+    dest = _Path(dest_dir) / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
+    return str(dest)
+
+
+def import_profile(zip_path: str) -> dict:
+    """Restore a project from an exported .zip file."""
+    from pathlib import Path as _Path
+    zip_path = _Path(zip_path)
+    with open(zip_path, "rb") as f:
+        return _post(
+            "/projects/import-profile",
+            files={"file": (zip_path.name, f, "application/zip")},
+            timeout=60,
+        )
+
+
+def delete_project(project_id: str) -> None:
+    """Permanently delete a project and all its data."""
+    _check(requests.delete(
+        f"{BASE_URL}/projects/{project_id}",
+        timeout=DEFAULT_TIMEOUT,
+    ))

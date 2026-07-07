@@ -104,6 +104,89 @@ def _hardware_summary() -> tuple[str, str, bool]:
     return status, f"{notice}\n\n{sysinfo}", can_train
 
 
+_ONBOARDING_FLAG_FILE = Path.home() / ".local" / "share" / "voiceforge" / ".onboarding_done"
+
+
+def _is_first_run() -> bool:
+    """Returns True if the user has never dismissed the onboarding screen."""
+    return not _ONBOARDING_FLAG_FILE.exists()
+
+
+def _mark_onboarding_done() -> None:
+    _ONBOARDING_FLAG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _ONBOARDING_FLAG_FILE.touch()
+
+
+def on_onboarding_done():
+    """User dismissed onboarding — mark it done and show welcome screen."""
+    _mark_onboarding_done()
+    return gr.update(visible=False), gr.update(visible=True)
+
+
+def on_load_project_list():
+    """Fetch all projects and render a markdown list."""
+    try:
+        projects = client.list_projects()
+    except client.BackendError as e:
+        return f"⚠️ Couldn't load projects: {e}"
+    if not projects:
+        return "*No voices yet — create one below.*"
+    lines = []
+    for p in projects:
+        name = p.get("name", "Unnamed")
+        clips = p.get("validated_count", 0)
+        has_profile = "🧠 profile" if p.get("has_voice_profile") else "🎤 quick clone"
+        created = (p.get("created_at", "")[:10])
+        lines.append(
+            f"**{name}** — {clips} clip{'s' if clips != 1 else ''}, "
+            f"{has_profile}, created {created} "
+            f"[`{p['id'][:8]}…`]"
+        )
+    return "\n\n".join(lines)
+
+
+def on_import_profile(zip_path: str | None):
+    """Restore a project from a zip file."""
+    if not zip_path:
+        return "Drop a .zip file above."
+    try:
+        project = client.import_profile(zip_path)
+        return f"✅ Imported **{project.get('name', 'project')}** (id: `{project['id'][:8]}…`)"
+    except client.BackendError as e:
+        return f"⚠️ Import failed: {e}"
+
+
+def on_export_project(project_id: str | None):
+    """Trigger export and return file path for gr.File download."""
+    if not project_id:
+        return "Create or open a project first.", gr.update(visible=False)
+    import tempfile
+    try:
+        dest = client.export_project(project_id, tempfile.gettempdir())
+        return (
+            f"✅ Ready — click the file below to download.",
+            gr.update(visible=True, value=dest),
+        )
+    except client.BackendError as e:
+        return f"⚠️ Export failed: {e}", gr.update(visible=False)
+
+
+def on_delete_project_confirmed(project_id: str | None):
+    """Delete the current project and return to the picker."""
+    if not project_id:
+        return "No project selected.", None, gr.update(visible=True), gr.update(visible=False)
+    try:
+        client.delete_project(project_id)
+        return (
+            "✅ Deleted.",
+            None,
+            gr.update(visible=True),
+            gr.update(visible=False),
+        )
+    except client.BackendError as e:
+        return f"⚠️ Delete failed: {e}", project_id, gr.update(), gr.update()
+
+
 def _get_prompts(language: str, count: int = VOICE_PROFILE_CLIPS) -> list[str]:
     """Load prompts from the backend transcriber; fall back to defaults."""
     try:
@@ -704,9 +787,31 @@ def build_app() -> gr.Blocks:
         )
 
         # ─────────────────────────────────────────────────────────
+        # Screen 0: Onboarding (first-run only)
+        # ─────────────────────────────────────────────────────────
+        first_run = _is_first_run()
+        with gr.Group(visible=first_run) as onboarding_screen:
+            gr.Markdown("# 👋 Welcome to VoiceForge")
+            gr.Markdown(
+                "VoiceForge lets you clone your voice and generate speech in it — "
+                "all on your own computer. No cloud, no account, no data sent anywhere.\n\n"
+                "**Two ways to use it:**\n\n"
+                "🎤 **Quick Clone** (default) — record one 6–10 second clip and "
+                "start generating immediately. Works on any machine.\n\n"
+                "🧠 **Voice Profile** (advanced) — record ~30 clips to train a "
+                "higher-quality model. Needs a GPU with at least 6 GB of memory.\n\n"
+                "**How to get started:**\n"
+                "1. Give your voice a name\n"
+                "2. Record one short clip\n"
+                "3. Type any text and hit Generate\n\n"
+                "That's it. You can come back and record more clips any time."
+            )
+            onboarding_done_btn = gr.Button("Let's go →", variant="primary")
+
+        # ─────────────────────────────────────────────────────────
         # Screen 1: Welcome / hardware check
         # ─────────────────────────────────────────────────────────
-        with gr.Group(visible=True) as welcome_screen:
+        with gr.Group(visible=not first_run) as welcome_screen:
             status_md, notice_md, _can_train = _hardware_summary()
             gr.Markdown(status_md)
             gr.Markdown(notice_md)
@@ -716,15 +821,35 @@ def build_app() -> gr.Blocks:
         # Screen 2: Project picker / create
         # ─────────────────────────────────────────────────────────
         with gr.Group(visible=False) as project_screen:
-            gr.Markdown("## Name your voice")
-            gr.Markdown(
-                "Give it any label — 'My voice', 'Narrator', whatever."
-            )
+            gr.Markdown("## Your voices")
+
+            # Existing projects list
+            with gr.Accordion("Open an existing voice", open=True):
+                project_list_md = gr.Markdown("*Loading...*")
+                refresh_btn = gr.Button("↻ Refresh", size="sm")
+
+            gr.Markdown("---")
+            gr.Markdown("### Create a new voice")
+            gr.Markdown("Give it any label — 'My voice', 'Narrator', whatever.")
             name_in = gr.Textbox(
                 label="Voice name", placeholder="e.g. My voice", max_lines=1,
             )
             create_btn = gr.Button("Create", variant="primary")
             project_status = gr.Markdown("")
+
+            gr.Markdown("---")
+            gr.Markdown("### Import a voice profile")
+            gr.Markdown(
+                "Drop a `.zip` exported from VoiceForge to restore it on this machine."
+            )
+            import_zip_file = gr.File(
+                label="VoiceForge .zip",
+                file_count="single",
+                file_types=[".zip"],
+                type="filepath",
+            )
+            import_profile_btn = gr.Button("Import", variant="secondary")
+            import_profile_status = gr.Markdown("")
 
         # ─────────────────────────────────────────────────────────
         # Screen 3: Quick Clone
@@ -812,6 +937,26 @@ def build_app() -> gr.Blocks:
                 setup_profile_btn = gr.Button("Set up Voice Profile →", variant="secondary")
                 profile_cta_status = gr.Markdown("")
 
+            with gr.Tab("Export / Delete"):
+                gr.Markdown("### Save this voice profile")
+                gr.Markdown(
+                    "Downloads a `.zip` with your recordings and trained "
+                    "profile (if you've done Voice Profile training). "
+                    "You can import it on another machine."
+                )
+                export_btn = gr.Button("⬇️ Download voice profile", variant="secondary")
+                export_status = gr.Markdown("")
+                export_file_out = gr.File(label="Downloaded file", visible=False, interactive=False)
+
+                gr.Markdown("---")
+                gr.Markdown("### Delete this voice")
+                gr.Markdown(
+                    "⚠️ This permanently deletes all recordings and the "
+                    "trained profile. Cannot be undone."
+                )
+                delete_project_btn = gr.Button("🗑️ Delete voice", variant="stop")
+                delete_status = gr.Markdown("")
+
             with gr.Row():
                 back_btn = gr.Button("← Back to projects")
 
@@ -889,11 +1034,29 @@ def build_app() -> gr.Blocks:
         # Wiring
         # ══════════════════════════════════════════════════════════
 
-        # Screen 1 → 2
+        # Onboarding → Welcome
+        onboarding_done_btn.click(
+            fn=on_onboarding_done,
+            outputs=[onboarding_screen, welcome_screen],
+        )
+
+        # Load project list when project screen becomes visible
         welcome_continue.click(
             fn=lambda: (gr.update(visible=False), gr.update(visible=True)),
             outputs=[welcome_screen, project_screen],
+        ).then(
+            fn=on_load_project_list,
+            outputs=[project_list_md],
         )
+
+        refresh_btn.click(fn=on_load_project_list, outputs=[project_list_md])
+
+        # Import profile
+        import_profile_btn.click(
+            fn=on_import_profile,
+            inputs=[import_zip_file],
+            outputs=[import_profile_status],
+        ).then(fn=on_load_project_list, outputs=[project_list_md])
 
         # Screen 2 → 3
         create_btn.click(
@@ -1019,10 +1182,24 @@ def build_app() -> gr.Blocks:
             outputs=[profile_screen, clone_screen],
         )
 
-        # Quick Clone back to picker
+        # Quick Clone back to picker — refresh list on return
         back_btn.click(
             fn=on_back_to_picker,
             outputs=[project_id, project_screen, clone_screen],
+        ).then(fn=on_load_project_list, outputs=[project_list_md])
+
+        # Export voice profile
+        export_btn.click(
+            fn=on_export_project,
+            inputs=[project_id],
+            outputs=[export_status, export_file_out],
+        )
+
+        # Delete voice profile
+        delete_project_btn.click(
+            fn=on_delete_project_confirmed,
+            inputs=[project_id],
+            outputs=[delete_status, project_id, project_screen, clone_screen],
         )
 
     return app
