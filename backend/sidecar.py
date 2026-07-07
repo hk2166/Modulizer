@@ -49,6 +49,22 @@ async def serve_backend() -> None:
 
 async def serve_frontend() -> None:
     """Launch the Gradio frontend in a subprocess and wait for it."""
+    # Kill any stale process that's already holding FRONTEND_PORT so that a
+    # previous cargo-tauri-dev session doesn't block the new one.
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(("127.0.0.1", FRONTEND_PORT)) == 0:
+            # Something is already on the port.  Find the pid and kill it.
+            try:
+                import subprocess as _sp
+                result = _sp.run(
+                    ["fuser", "-k", f"{FRONTEND_PORT}/tcp"],
+                    capture_output=True,
+                )
+                await asyncio.sleep(1.5)   # give the old process a moment to die
+            except Exception:
+                pass  # fuser not available — Gradio will pick a new port
+
     # Determine the Python executable — in a PyInstaller bundle it's sys.executable,
     # in dev mode it's the venv python.
     python = sys.executable
