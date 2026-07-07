@@ -47,37 +47,41 @@ def system_info():
 @app.get("/models/status")
 def models_status():
     """
-    Tauri startup shell polls this to show download progress on first run.
+    Tauri startup shell polls this to decide whether to show a progress screen.
+
+    This is a PURE DISK CHECK — it never triggers a download.
+    Downloads happen lazily on first use (Quick Clone / fine-tune).
 
     Returns:
-        ready: True if all required models are present on disk.
-        downloads: list of in-progress downloads (empty if ready or not started).
+        ready: True when all required model files exist on disk.
+        downloads: always [] — we don't track download progress here because
+                   downloads are triggered by inference, not this endpoint.
+        xtts_ready: whether XTTS v2 model.pth exists.
+        whisper_ready: whether faster-whisper base model exists.
     """
     from pathlib import Path
     from backend.core.settings import MODELS_DIR
-    from TTS.utils.manage import ModelManager
 
-    downloads = []
+    # XTTS v2 — Coqui stores models in ~/.local/share/tts/<slug>/
+    xtts_dir = (
+        Path.home()
+        / ".local/share/tts"
+        / "tts_models--multilingual--multi-dataset--xtts_v2"
+    )
+    # model.pth is the main weight file; its presence means the download finished.
+    xtts_ready = (xtts_dir / "model.pth").exists()
 
-    # Check XTTS v2 (~2 GB)
-    try:
-        manager = ModelManager()
-        model_path, _, _ = manager.download_model(
-            "tts_models/multilingual/multi-dataset/xtts_v2",
-        )
-        xtts_ready = Path(model_path, "model.pth").exists()
-    except Exception:
-        xtts_ready = False
-
-    # Check Whisper base (~150 MB, used for transcription QA)
+    # faster-whisper base — downloaded by transcriber on first transcription
     whisper_base_dir = MODELS_DIR / "whisper" / "models--Systran--faster-whisper-base"
     whisper_ready = whisper_base_dir.exists()
 
-    ready = xtts_ready and whisper_ready
+    # We only gate on XTTS — Whisper downloads in the background on first use
+    # and its absence shouldn't block the user from reaching the app.
+    ready = xtts_ready
 
     return {
         "ready": ready,
-        "downloads": downloads,
+        "downloads": [],          # progress tracking not implemented; shell skips bar
         "xtts_ready": xtts_ready,
         "whisper_ready": whisper_ready,
     }

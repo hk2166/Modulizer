@@ -82,26 +82,25 @@ async function waitForBackend() {
 // ── Model download ─────────────────────────────────────────────── 
 
 /**
- * Stream model download progress from the backend.
+ * Check that required models are present on disk.
  *
- * The backend exposes GET /models/status which returns JSON:
- * {
- *   "ready": bool,
- *   "downloads": [
- *     { "name": "XTTS v2", "total_bytes": 2050000000, "downloaded_bytes": 512000000 }
- *   ]
- * }
+ * The backend /models/status endpoint is a pure disk check — it never
+ * triggers downloads. If models aren't present the user needs to run
+ * a Quick Clone first (which lazily downloads XTTS on first synthesis).
  *
- * We poll every second until ready=true.
+ * We poll until ready=true, showing the appropriate status message.
  */
 async function ensureModels(backendUrl) {
+  let notReadyCount = 0;
+
   for (;;) {
     let status;
     try {
       const r = await fetch(`${backendUrl}/models/status`, { cache: "no-store" });
+      if (!r.ok) return;          // endpoint missing → treat as ready (dev mode)
       status = await r.json();
     } catch {
-      // if the endpoint doesn't exist yet, treat as ready
+      // endpoint unreachable → treat as ready so we don't block startup
       return;
     }
 
@@ -110,10 +109,13 @@ async function ensureModels(backendUrl) {
       return;
     }
 
-    // Show download progress for the first incomplete model
+    notReadyCount++;
+
+    // Show download progress if the backend reports active downloads
     const active = (status.downloads || []).find(
       (d) => d.downloaded_bytes < d.total_bytes
     );
+
     if (active) {
       const pct = Math.round((active.downloaded_bytes / active.total_bytes) * 100);
       const downloaded_mb = Math.round(active.downloaded_bytes / 1024 / 1024);
@@ -123,6 +125,16 @@ async function ensureModels(backendUrl) {
         pct,
         `${downloaded_mb} MB / ${total_mb} MB — one-time download`
       );
+    } else if (!status.xtts_ready) {
+      // Models not present — they download on first Quick Clone use.
+      // Don't block; let the user reach the app and trigger the download naturally.
+      if (notReadyCount >= 2) {
+        hideProgress();
+        setStatus("Voice engine will download on first use…");
+        await sleep(1800);
+        return;
+      }
+      setStatus("Checking voice engine…");
     } else {
       setStatus("Preparing models…");
     }
