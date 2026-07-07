@@ -1,17 +1,61 @@
-/* VoiceForge startup shell */
+/* ══════════════════════════════════════════════════════════════════
+   VoiceForge — Neon / Synth-Studio startup shell
+   ══════════════════════════════════════════════════════════════════
+   This styles the Tauri loading shell (index.html). The Gradio app that
+   loads afterwards is themed separately from frontend/app.py.
+   ────────────────────────────────────────────────────────────────── */
+
+/* ── Self-hosted fonts (offline — no CDN calls) ─────────────────── */
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/src/assets/fonts/space-grotesk.woff2") format("woff2");
+  font-weight: 300 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/src/assets/fonts/chakra-petch.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("/src/assets/fonts/inter.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* ── Design tokens ──────────────────────────────────────────────── */
 
 :root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --text: #202124;
-  --text-muted: #667085;
-  --border: #d7dde5;
-  --accent: #315f72;
-  --accent-light: #e8f0f3;
-  --green: #22845d;
-  --amber: #d89b2b;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+  /* Base surfaces */
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --surface-2: #1a1a26;
+  --border: #262636;
+
+  /* Neon accents */
+  --cyan: #00e5ff;      /* primary — Generate / Record idle */
+  --magenta: #ff2fd0;   /* recording-in-progress */
+  --violet: #8b5cf6;    /* Voice Profile / advanced path */
+  --green: #39ff88;     /* success / validation passed */
+  --amber: #ff9f1c;     /* friendly warning / hardware gate */
+
+  /* Text */
+  --text: #e8e8f0;
+  --text-muted: #8888a0;
+
+  /* Glows (state-tied) */
+  --glow-cyan: 0 0 12px rgba(0, 229, 255, 0.55), 0 0 32px rgba(0, 229, 255, 0.22);
+  --glow-magenta: 0 0 14px rgba(255, 47, 208, 0.6), 0 0 36px rgba(255, 47, 208, 0.25);
+  --glow-violet: 0 0 12px rgba(139, 92, 246, 0.5), 0 0 30px rgba(139, 92, 246, 0.2);
+  --glow-green: 0 0 12px rgba(57, 255, 136, 0.55), 0 0 30px rgba(57, 255, 136, 0.2);
+
+  --font-display: "Space Grotesk", "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  font-family: var(--font-body);
   color: var(--text);
   background: var(--bg);
 }
@@ -21,55 +65,98 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* ── Loading shell ─────────────────────────────────────────────── */
 
 .shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 32px;
+  gap: 34px;
   min-height: 100vh;
   padding: 40px 24px;
   text-align: center;
+  overflow: hidden;
 }
+
+/* Faint grid texture + soft radial vignette behind everything */
+.shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(139, 92, 246, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 72%);
+  -webkit-mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 72%);
+  pointer-events: none;
+  z-index: 0;
+}
+.shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 38%, rgba(0, 229, 255, 0.08), transparent 55%);
+  pointer-events: none;
+  z-index: 0;
+}
+.shell > * { position: relative; z-index: 1; }
+
+/* ── Brand ──────────────────────────────────────────────────────── */
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+}
+
+.brand svg {
+  filter: drop-shadow(0 0 8px rgba(0, 229, 255, 0.5));
 }
 
 .brand-name {
-  font-size: 1.6rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--cyan), var(--violet));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 24px rgba(0, 229, 255, 0.25);
 }
 
-/* ── Spinner ───────────────────────────────────────────────────── */
+/* ── Spinner (ring with a cyan glow) ───────────────────────────── */
 
 .status-area {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
 }
 
 .spinner {
-  width: 36px;
-  height: 36px;
-  border: 3px solid var(--accent-light);
-  border-top-color: var(--accent);
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(0, 229, 255, 0.14);
+  border-top-color: var(--cyan);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+  box-shadow: var(--glow-cyan);
 }
 
 .spinner[data-done] {
   border-color: var(--green);
+  border-top-color: var(--green);
   animation: none;
+  box-shadow: var(--glow-green);
 }
 
 @keyframes spin {
@@ -78,8 +165,10 @@ body {
 
 .status-text {
   margin: 0;
-  font-size: 1rem;
-  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  color: var(--text);
   min-height: 1.5em;
 }
 
@@ -87,29 +176,39 @@ body {
 
 .download-area {
   width: 100%;
-  max-width: 420px;
+  max-width: 440px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.06);
 }
 
 .download-label {
   margin: 0;
+  font-family: var(--font-display);
   font-weight: 600;
+  letter-spacing: 0.03em;
   color: var(--text);
 }
 
 .progress-track {
-  height: 8px;
-  background: var(--border);
+  height: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 999px;
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  background: var(--accent);
+  width: 0%;
+  background: linear-gradient(90deg, var(--cyan), var(--violet));
   border-radius: 999px;
+  box-shadow: var(--glow-cyan);
   transition: width 0.3s ease;
 }
 
@@ -123,6 +222,7 @@ body {
 
 .tagline {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
   color: var(--text-muted);
 }

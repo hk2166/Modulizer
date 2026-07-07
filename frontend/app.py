@@ -21,6 +21,7 @@ from pathlib import Path
 import gradio as gr
 
 from frontend import client
+from frontend import theme as vf_theme
 
 # ── Language config ──────────────────────────────────────────────
 _LANG_LABEL_TO_CODE = {
@@ -834,7 +835,7 @@ def build_app() -> gr.Blocks:
             name_in = gr.Textbox(
                 label="Voice name", placeholder="e.g. My voice", max_lines=1,
             )
-            create_btn = gr.Button("Create", variant="primary")
+            create_btn = gr.Button("Create", variant="primary", elem_id="vf-create-btn")
             project_status = gr.Markdown("")
 
             gr.Markdown("---")
@@ -867,6 +868,7 @@ def build_app() -> gr.Blocks:
                     sources=["microphone", "upload"],
                     type="filepath",
                     label="Recording",
+                    elem_id="vf-mic",
                     waveform_options=gr.WaveformOptions(show_recording_waveform=True),
                 )
                 clip_feedback = gr.Markdown("")
@@ -900,6 +902,7 @@ def build_app() -> gr.Blocks:
                     label="Text",
                     placeholder="Type something for me to say...",
                     lines=3,
+                    elem_id="vf-text-in",
                 )
                 with gr.Accordion("Voice pacing (advanced)", open=False):
                     gr.Markdown(
@@ -919,7 +922,7 @@ def build_app() -> gr.Blocks:
                         info="Low = steady and even. High = more natural rhythm "
                              "(slight glitch risk).",
                     )
-                gen_btn = gr.Button("Generate", variant="primary")
+                gen_btn = gr.Button("Generate", variant="primary", elem_id="vf-generate")
                 synth_status = gr.Markdown("")
                 audio_out = gr.Audio(label="Output", type="filepath", interactive=False)
 
@@ -997,6 +1000,7 @@ def build_app() -> gr.Blocks:
                     sources=["microphone", "upload"],
                     type="filepath",
                     label="Voice audio",
+                    elem_id="vf-profile-mic",
                     waveform_options=gr.WaveformOptions(show_recording_waveform=True),
                 )
                 profile_clip_feedback = gr.Markdown("")
@@ -1217,7 +1221,9 @@ def main():
         server_name="127.0.0.1",
         server_port=7860,
         inbrowser=False,
-        theme=gr.themes.Soft(),
+        theme=vf_theme.build_theme(),
+        css=vf_theme.CSS,
+        head=vf_theme.HEAD,
         allowed_paths=[str(DATA_DIR)],
     )
 

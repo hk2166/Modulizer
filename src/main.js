@@ -180,7 +180,8 @@ async function startup() {
 
   } catch (err) {
     setStatus(`Error: ${err.message || err}`);
-    spinner.style.borderTopColor = "#c0392b";
+    spinner.style.borderTopColor = "#ff9f1c";
+    spinner.style.boxShadow = "0 0 12px rgba(255, 159, 28, 0.55)";
   }
 }
 
