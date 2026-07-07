@@ -56,3 +56,14 @@ TASKS.md
 DEBUG.md
 GUIDE.md
 .tokensave
+
+# ── Tauri / build artifacts ───────────────────────────────────────
+src-tauri/target/
+src-tauri/binaries/
+dist/
+node_modules/
+app-icon.png
+
+# ── PyInstaller ───────────────────────────────────────────────────
+build/
+*.spec.bak

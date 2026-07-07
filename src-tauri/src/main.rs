@@ -22,9 +22,9 @@ enum BackendChild {
 }
 
 impl BackendChild {
-    fn kill(&mut self) {
+    fn kill(self) {
         match self {
-            BackendChild::Std(child) => {
+            BackendChild::Std(mut child) => {
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -112,11 +112,10 @@ fn start_backend(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn stop_backend(state: &BackendState) {
-    if let Ok(mut child) = state.child.lock() {
-        if let Some(child) = child.as_mut() {
+    if let Ok(mut guard) = state.child.lock() {
+        if let Some(child) = guard.take() {
             child.kill();
         }
-        *child = None;
     }
 
     if let Ok(port_file) = state.port_file.lock() {

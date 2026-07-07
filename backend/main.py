@@ -42,3 +42,53 @@ def health():
 @app.get("/system")
 def system_info():
     return get_full_system_profile()
+
+
+@app.get("/models/status")
+def models_status():
+    """
+    Tauri startup shell polls this to show download progress on first run.
+
+    Returns:
+        ready: True if all required models are present on disk.
+        downloads: list of in-progress downloads (empty if ready or not started).
+    """
+    from pathlib import Path
+    from backend.core.settings import MODELS_DIR
+    from TTS.utils.manage import ModelManager
+
+    downloads = []
+
+    # Check XTTS v2 (~2 GB)
+    try:
+        manager = ModelManager()
+        model_path, _, _ = manager.download_model(
+            "tts_models/multilingual/multi-dataset/xtts_v2",
+        )
+        xtts_ready = Path(model_path, "model.pth").exists()
+    except Exception:
+        xtts_ready = False
+
+    # Check Whisper base (~150 MB, used for transcription QA)
+    whisper_base_dir = MODELS_DIR / "whisper" / "models--Systran--faster-whisper-base"
+    whisper_ready = whisper_base_dir.exists()
+
+    ready = xtts_ready and whisper_ready
+
+    return {
+        "ready": ready,
+        "downloads": downloads,
+        "xtts_ready": xtts_ready,
+        "whisper_ready": whisper_ready,
+    }
+
+
+@app.get("/frontend-url")
+def frontend_url():
+    """
+    Tell the Tauri shell where the Gradio UI is running.
+    In production the sidecar starts Gradio on port 7860.
+    """
+    import os
+    port = int(os.environ.get("VOICEFORGE_FRONTEND_PORT", "7860"))
+    return {"url": f"http://127.0.0.1:{port}"}

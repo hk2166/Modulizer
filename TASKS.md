@@ -226,6 +226,21 @@ Goal: one-click Windows .exe install. User opens app, records, hears their voice
 ### Distribution
 
 - [ ] **(P1)** Replace Gradio UI with Tauri + web frontend (React/Svelte/etc.)
+- [ ] **(P2)** **Strip dev-only deps** before bundle (current `requirements-lock.txt` has ROS 2 noise — needs clean regen)
+- [ ] **(P2)** Bundle FFmpeg statically (or drop it — librosa pipeline doesn't need it)
+
+### First-run experience
+
+- [ ] **(P1)** Model download with progress + resumability:
+  - [ ] **(P1)** XTTS v2 (~2 GB)
+  - [ ] **(P2)** Whisper base (~150 MB) — only if Voice Profile is used
+  - [ ] **(P1)** Clear copy: "Downloading voice engine (one-time, ~2 GB)..."
+- [x] **(P1)** Models stored in user data dir, not next to the .exe
+- [ ] **(P2)** Resume on interruption (network drop, app crash mid-download)
+
+### Distribution
+
+- [ ] **(P1)** Replace Gradio UI with Tauri + web frontend (React/Svelte/etc.)
 - [ ] **(P3)** Code-signing for Windows / macOS (post-MVP)
 - [ ] **(P3)** Auto-update channel (post-MVP)
 

@@ -7,24 +7,42 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="status" aria-live="polite">
-        <div class="mark" id="statusMark"></div>
-        <p id="statusText">Starting up...</p>
-      </section>
-      <section class="workspace" id="workspace" hidden>
-        <header>
-          <p class="eyebrow">VoiceForge</p>
-          <h1>Quick Clone</h1>
-        </header>
-        <label>
-          Text to speak
-          <textarea id="synthesisText" rows="5">Hello from VoiceForge.</textarea>
-        </label>
-        <button id="healthButton" type="button">Check backend</button>
-        <pre id="backendDetails"></pre>
-      </section>
+    <!-- Loading / startup screen shown while the Python backend boots -->
+    <main class="shell" id="loadingShell">
+      <div class="brand">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+          <rect width="40" height="40" rx="10" fill="#315f72"/>
+          <path d="M12 20c0-4.4 3.6-8 8-8s8 3.6 8 8-3.6 8-8 8-8-3.6-8-8z" fill="none" stroke="white" stroke-width="2.5"/>
+          <path d="M20 13v14M14 17l6-4 6 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="brand-name">VoiceForge</span>
+      </div>
+
+      <div class="status-area">
+        <div class="spinner" id="spinner" aria-label="Loading"></div>
+        <p class="status-text" id="statusText">Starting up…</p>
+      </div>
+
+      <!-- Model download progress — hidden until a download is in progress -->
+      <div class="download-area" id="downloadArea" hidden>
+        <p class="download-label" id="downloadLabel">Downloading voice engine…</p>
+        <div class="progress-track">
+          <div class="progress-bar" id="progressBar" style="width:0%"></div>
+        </div>
+        <p class="download-note" id="downloadNote">One-time download, ~2 GB. Won't happen again.</p>
+      </div>
+
+      <p class="tagline">Local voice cloning. Nothing leaves your machine.</p>
     </main>
+
+    <!-- The Gradio app loads in this iframe once the backend is ready -->
+    <iframe
+      id="appFrame"
+      hidden
+      style="position:fixed;inset:0;width:100%;height:100%;border:none;"
+      title="VoiceForge App"
+    ></iframe>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
